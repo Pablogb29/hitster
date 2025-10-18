@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Host from "./pages/Host";
 import Join from "./pages/Join";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 function Home() {
   return (
@@ -20,7 +21,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home/>}/>
         <Route path="/host" element={<Host/>}/>
-        <Route path="/join" element={<Join/>}/>
+        <Route path="/join" element={<ErrorBoundary><Join/></ErrorBoundary>}/>
       </Routes>
     </BrowserRouter>
   );

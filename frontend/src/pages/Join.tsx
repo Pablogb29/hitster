@@ -18,10 +18,20 @@ export default function Join() {
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
   const [status, setStatus] = useState<string>("idle");
+  const [boot] = useState<number>(() => Date.now());
 
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + '//' + location.host))
     .replace(/\/+$/, '')
     .replace(/\/api$/, '');
+  let WS_DEBUG_URL = "";
+  try {
+    const u = new URL(API_BASE);
+    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+    WS_DEBUG_URL = `${wsProto}//${u.host}/ws/${encodeURIComponent(code)}`;
+  } catch {
+    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+    WS_DEBUG_URL = `${wsProto}//${location.host}/ws/${encodeURIComponent(code)}`;
+  }
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
 
   const join = () => {
@@ -140,6 +150,7 @@ export default function Join() {
     <div className="min-h-screen bg-zinc-900 text-white p-6">
       <h2 className="text-xl font-semibold">Sala {code}</h2>
       <div className="mt-1 text-xs opacity-70">Estado: {status} • hostId: {hostId || 'n/a'} • device: {deviceId || 'n/a'}</div>
+      <div className="text-xs opacity-70">WS: {WS_DEBUG_URL}</div>
       <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
       <div className="mt-4 grid md:grid-cols-2 gap-6">
         <div className="p-4 bg-zinc-800 rounded">
