@@ -8,7 +8,7 @@ export default function Join() {
   const [code, setCode] = useState(codeParam);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
-  const [room, setRoom] = useState<any>(null);
+  const [, setRoom] = useState<any>(null);
   const [playerCard, setPlayerCard] = useState<any>(null);
   const [wins, setWins] = useState<Record<string, number>>({});
   const [myTurn, setMyTurn] = useState(false);
@@ -86,6 +86,41 @@ export default function Join() {
     connRef.current.send("turn:guess", { playerId, choice });
   };
 
+  // Load Spotify Web Playback SDK and init Player
+  useEffect(() => {
+    if (!joined) return;
+    const existing = document.getElementById('spotify-sdk');
+    if (!existing) {
+      const s = document.createElement('script');
+      s.id = 'spotify-sdk';
+      s.src = 'https://sdk.scdn.co/spotify-player.js';
+      s.async = true;
+      document.body.appendChild(s);
+    }
+    (window as any).onSpotifyWebPlaybackSDKReady = () => {
+      const player = new (window as any).Spotify.Player({
+        name: 'HITSTER Player',
+        getOAuthToken: async (cb: any) => {
+          try {
+            const r = await fetch(`${API_BASE}/api/spotify/token?hostId=${hostId}`);
+            if (!r.ok) return;
+            const data = await r.json();
+            cb(data.access_token);
+          } catch {}
+        },
+        volume: 0.8,
+      });
+      player.addListener('ready', ({ device_id }: any) => {
+        setDeviceId(device_id);
+        setPlayerReady(true);
+      });
+      player.addListener('not_ready', () => {
+        setPlayerReady(false);
+      });
+      player.connect();
+    };
+  }, [joined, hostId]);
+
   return (
     <div className="min-h-screen bg-zinc-900 text-white p-6">
       <h2 className="text-xl font-semibold">Sala {code}</h2>
@@ -132,38 +167,3 @@ export default function Join() {
     </div>
   );
 }
-  // Load Spotify Web Playback SDK and init Player
-  useEffect(() => {
-    if (!joined) return;
-    // Inject SDK
-    const existing = document.getElementById('spotify-sdk');
-    if (!existing) {
-      const s = document.createElement('script');
-      s.id = 'spotify-sdk';
-      s.src = 'https://sdk.scdn.co/spotify-player.js';
-      s.async = true;
-      document.body.appendChild(s);
-    }
-    (window as any).onSpotifyWebPlaybackSDKReady = () => {
-      const player = new (window as any).Spotify.Player({
-        name: 'HITSTER Player',
-        getOAuthToken: async (cb: any) => {
-          try {
-            const r = await fetch(`${API_BASE}/api/spotify/token?hostId=${hostId}`);
-            if (!r.ok) return;
-            const data = await r.json();
-            cb(data.access_token);
-          } catch {}
-        },
-        volume: 0.8,
-      });
-      player.addListener('ready', ({ device_id }: any) => {
-        setDeviceId(device_id);
-        setPlayerReady(true);
-      });
-      player.addListener('not_ready', () => {
-        setPlayerReady(false);
-      });
-      player.connect();
-    };
-  }, [joined, hostId]);
