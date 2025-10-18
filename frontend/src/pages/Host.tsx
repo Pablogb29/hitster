@@ -22,7 +22,9 @@ export default function Host() {
     }
     return "http://localhost:8000";
   }
-  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveDefaultBackendBase()).replace(/\/+$/,'');
+  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveDefaultBackendBase())
+    .replace(/\/+$/, '')
+    .replace(/\/api$/, '');
 
   async function createRoom() {
     try {

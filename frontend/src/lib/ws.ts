@@ -16,7 +16,9 @@ function resolveDefaultBackendBase() {
 function buildWsUrl(code: string) {
   const cfg = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
   const defaultBase = resolveDefaultBackendBase();
-  let httpBase = (cfg && cfg.trim().length > 0 ? cfg : defaultBase).replace(/\/+$/,'');
+  let httpBase = (cfg && cfg.trim().length > 0 ? cfg : defaultBase)
+    .replace(/\/+$/, '')
+    .replace(/\/api$/, '');
   try {
     const u = new URL(httpBase);
     const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
