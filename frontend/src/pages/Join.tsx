@@ -124,10 +124,19 @@ export default function Join() {
           volume: 0.8,
         });
         playerRef.current = player;
-        player.addListener('ready', ({ device_id }: any) => {
+        player.addListener('ready', async ({ device_id }: any) => {
           setDeviceId(device_id);
           setPlayerReady(true);
           setStatus(prev => `sdk-ready (${device_id}); ` + prev);
+          // Try to activate device immediately
+          try {
+            const r = await fetch(`${API_BASE}/api/spotify/transfer`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ hostId, device_id: device_id, play: true })
+            });
+            setStatus(prev => `transfer ${r.status} • ` + prev);
+          } catch {}
         });
         player.addListener('not_ready', () => {
           setPlayerReady(false);
@@ -169,6 +178,19 @@ export default function Join() {
     if (!connRef.current) return;
     connRef.current.send("turn:draw", { playerId });
   };
+
+  async function activateDevice() {
+    if (!deviceId || !hostId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/spotify/transfer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostId, device_id: deviceId, play: true })
+      });
+      setStatus(prev => `manual transfer ${r.status} • ` + prev);
+    } catch (e:any) {
+      setStatus(prev => `transfer err: ${e?.message||e} • ` + prev);
+    }
+  }
 
   const guess = (choice: "before" | "after") => {
     if (!connRef.current) return;
@@ -218,7 +240,10 @@ export default function Join() {
           {myTurn ? (
             <div>
               {!currentSong ? (
-                <button onClick={draw} className="px-4 py-2 bg-emerald-600 rounded">▶ Play</button>
+                <>
+                  <div className="mb-2 text-xs opacity-70">Device: {deviceId || 'n/a'} <button onClick={activateDevice} className="ml-2 px-2 py-1 bg-zinc-700 rounded">Activate</button></div>
+                  <button onClick={draw} className="px-4 py-2 bg-emerald-600 rounded">▶ Play</button>
+                </>
               ) : (
                 <div>
                   {currentSong.preview_url ? (

@@ -448,6 +448,14 @@ async def spotify_play(payload: dict):
             )
         except Exception:
             pass
+        # Set a reasonable volume (optional, best-effort)
+        try:
+            await client.put(
+                f"https://api.spotify.com/v1/me/player/volume?volume_percent=80&device_id={device_id}",
+                headers=headers,
+            )
+        except Exception:
+            pass
         r = await client.put(
             f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
             headers=headers,
@@ -456,6 +464,25 @@ async def spotify_play(payload: dict):
     if r.status_code >= 400:
         return Response(r.text, status_code=r.status_code)
     return {"ok": True}
+
+@app.post("/api/spotify/transfer")
+async def spotify_transfer(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    play = bool(payload.get("play", True))
+    if not host_id or not device_id:
+        return Response("Missing params", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.put(
+            "https://api.spotify.com/v1/me/player",
+            headers=headers,
+            json={"device_ids": [device_id], "play": play},
+        )
+    return Response(r.text, status_code=r.status_code)
 
 @app.get("/api/spotify/login")
 def spotify_login(hostId: str):
