@@ -133,14 +133,14 @@ async def ws_room(ws: WebSocket, code: str):
                     # Load playlist deck (selected or default to 'Hitster')
                     pl_id = data.get("playlistId")
                     pl_name = data.get("playlistName") or (room.selectedPlaylistName or "Hitster")
-                    deck = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
-                    if len(deck) < 2:
-                        await broadcast(code, "game:error", {"message": "Playlist not playable (need >=2 with preview)"})
+                    all_cards, play_cards = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
+                    if len(play_cards) < 1:
+                        await broadcast(code, "game:error", {"message": "Playlist not playable (need >=1 with preview)"})
                         continue
                 except Exception as e:
                     await broadcast(code, "game:error", {"message": f"Failed to load playlist: {e}"})
                     continue
-                room.deck = deck
+                room.deck = []
                 room.used_track_ids = set()
                 room.player_cards = {}
                 room.wins = {}
@@ -152,8 +152,9 @@ async def ws_room(ws: WebSocket, code: str):
                         continue
                     # draw a unique card for player
                     card = None
-                    while deck and not card:
-                        c = deck.pop()
+                    # Take from all_cards (not necessarily preview) for reference
+                    while all_cards and not card:
+                        c = all_cards.pop()
                         if c["id"] not in room.used_track_ids:
                             room.used_track_ids.add(c["id"])
                             card = c
@@ -164,11 +165,14 @@ async def ws_room(ws: WebSocket, code: str):
                 # start game
                 room.state = "playing"
                 room.turnIndex = first_player_index(room)
+                # Build draw deck from preview-only, excluding used ids
+                room.deck = [c for c in play_cards if c["id"] not in room.used_track_ids]
+                random.shuffle(room.deck)
                 await broadcast(code, "game:init", {
                     "players": [pl.model_dump() for pl in room.players],
                     "playerCards": room.player_cards,
                     "wins": room.wins,
-                    "remaining": len([c for c in deck if c["id"] not in room.used_track_ids]),
+                    "remaining": len(room.deck),
                 })
                 first_id = room.players[room.turnIndex].id
                 await broadcast(code, "turn:begin", {"playerId": first_id})
@@ -362,7 +366,7 @@ def _map_track_to_card(item: dict) -> dict | None:
     except:
         return None
 
-async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str | None = None, min_tracks: int = 30) -> list[dict]:
+async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str | None = None, min_tracks: int = 30) -> tuple[list[dict], list[dict]]:
     token = await _get_valid_token(host_id)
     if not token:
         return []
@@ -373,7 +377,7 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
             # Fetch specific playlist
             pr = await client.get(f"https://api.spotify.com/v1/playlists/{playlist_id}", headers=headers)
             if pr.status_code >= 400:
-                return []
+                return ([], [])
             target_playlist = pr.json()
         else:
             # Find by name (default to "Hitster")
@@ -383,7 +387,7 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
             pls = r.json().get("items", [])
             target_playlist = next((p for p in pls if (p.get("name") or "").strip().lower() == search_name), None)
             if not target_playlist:
-                return []
+                return ([], [])
         # Pull tracks pages
         tracks: list[dict] = []
         href = target_playlist.get("tracks", {}).get("href")
@@ -400,9 +404,9 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
         if c:
             cards.append(c)
     random.shuffle(cards)
-    # Only allow tracks with preview to satisfy "skip track without preview"
+    # Build two lists: all valid cards (for player reference) and preview-only (for draws)
     with_preview = [c for c in cards if c.get("preview_url")]
-    return with_preview
+    return (cards, with_preview)
 
 @app.get("/api/spotify/login")
 def spotify_login(hostId: str):
