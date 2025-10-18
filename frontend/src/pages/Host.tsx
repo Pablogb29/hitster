@@ -22,6 +22,7 @@ export default function Host() {
   const [wins, setWins] = useState<Record<string, number>>({});
   const [currentTurn, setCurrentTurn] = useState<string>("");
   const [lastResult, setLastResult] = useState<any>(null);
+  const [gameError, setGameError] = useState<string>("");
   function resolveDefaultBackendBase() {
     if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
       return "https://backend-production-f463.up.railway.app";
@@ -67,6 +68,10 @@ export default function Host() {
         }
         if (e.event === "game:finished") {
           setRoom(prev => prev ? { ...prev, state: 'finished' } : prev);
+        }
+        if (e.event === "game:error") {
+          const msg = e.data?.message || "Unable to start game. Check playlist has tracks with preview.";
+          setGameError(msg);
         }
       });
       setWs(conn);
@@ -170,6 +175,9 @@ export default function Host() {
             >
               Start Game
             </button>
+            {gameError && (
+              <div className="mt-2 text-sm text-red-400">{gameError}</div>
+            )}
 
             <div className="mt-4 border-t border-zinc-700 pt-3">
               <div className="flex items-center justify-between">
