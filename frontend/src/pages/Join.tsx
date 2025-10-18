@@ -91,7 +91,7 @@ export default function Join() {
   // Load Spotify Web Playback SDK and init Player (must not be behind conditional returns)
   useEffect(() => {
     const init = async () => {
-      if (!joined) return;
+      if (!joined || !hostId) return; // wait until hostId is known
       const existing = document.getElementById('spotify-sdk');
       if (!existing) {
         const s = document.createElement('script');
@@ -116,9 +116,11 @@ export default function Join() {
         player.addListener('ready', ({ device_id }: any) => {
           setDeviceId(device_id);
           setPlayerReady(true);
+          setStatus(prev => `sdk-ready (${device_id}); ` + prev);
         });
         player.addListener('not_ready', () => {
           setPlayerReady(false);
+          setStatus(prev => `sdk-not-ready; ` + prev);
         });
         player.connect();
       };
