@@ -18,7 +18,6 @@ export default function Join() {
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
   const [status, setStatus] = useState<string>("idle");
-  const [boot] = useState<number>(() => Date.now());
 
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + '//' + location.host))
     .replace(/\/+$/, '')
