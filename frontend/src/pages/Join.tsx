@@ -56,39 +56,22 @@ export default function Join() {
           const data = e.data || {};
           if (data.playerId === playerId) {
             setCurrentSong(data.song || null);
-            // Trigger playback via Web Playback SDK (host's token)
+            // Queue-and-skip approach: add to queue, then next, so Spotify starts our track
             const uri = data.song?.uri;
             if (deviceId && uri && hostId) {
-              // Try transfer + play with a light retry if not yet active
-              fetch(`${API_BASE}/api/spotify/transfer`, {
+              fetch(`${API_BASE}/api/spotify/queue_next`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostId, device_id: deviceId, play: true })
-              }).catch(()=>{}).finally(() => {
-                fetch(`${API_BASE}/api/spotify/play`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ hostId, device_id: deviceId, uri })
-                }).then(async (r)=>{
-                  if (!r.ok) {
-                    const t = await r.text().catch(()=>"(no body)");
-                    setStatus(prev=>`play ${r.status}: ${t} • `+prev);
-                  } else {
-                    setStatus(prev=>`play OK • `+prev);
-                  }
-                }).catch((err)=>{
-                  setStatus(prev=>`play fetch err: ${err?.message||err} • `+prev);
-                });
+                body: JSON.stringify({ hostId, device_id: deviceId, uri })
+              }).then(async (r)=>{
+                if (!r.ok) {
+                  const t = await r.text().catch(()=>"(no body)");
+                  setStatus(prev=>`queue_next ${r.status}: ${t} • `+prev);
+                } else {
+                  setStatus(prev=>`queue_next OK • `+prev);
+                }
+              }).catch((err)=>{
+                setStatus(prev=>`queue_next err: ${err?.message||err} • `+prev);
               });
-              // After 700ms, check state; if still not playing, retry play once
-              setTimeout(async () => {
-                try {
-                  const s = await fetch(`${API_BASE}/api/spotify/state?hostId=${hostId}`).then(r=>r.json());
-                  if (!s?.is_playing) {
-                    await fetch(`${API_BASE}/api/spotify/play`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId, uri }) });
-                    setStatus(prev=>`retry play • `+prev);
-                  }
-                } catch {}
-              }, 700);
             }
           } else {
             setCurrentSong(null);
