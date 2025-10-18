@@ -165,8 +165,8 @@ async def ws_room(ws: WebSocket, code: str):
                 # start game
                 room.state = "playing"
                 room.turnIndex = first_player_index(room)
-                # Build draw deck from preview-only, excluding used ids
-                room.deck = [c for c in play_cards if c["id"] not in room.used_track_ids]
+                # Build draw deck from ALL tracks now (Web Playback SDK handles playback)
+                room.deck = [c for c in all_cards if c["id"] not in room.used_track_ids]
                 random.shuffle(room.deck)
                 await broadcast(code, "game:init", {
                     "players": [pl.model_dump() for pl in room.players],
@@ -185,7 +185,7 @@ async def ws_room(ws: WebSocket, code: str):
                 current_id = room.players[room.turnIndex].id
                 if pid != current_id:
                     continue
-                # draw next unused card from remaining deck
+                # draw next unused card from remaining deck (now any track; preview optional)
                 card = None
                 try:
                     # try up to len(deck) times
@@ -193,7 +193,7 @@ async def ws_room(ws: WebSocket, code: str):
                         if not room.deck:
                             break
                         c = room.deck.pop()
-                        if c["id"] not in room.used_track_ids and c.get("preview_url"):
+                        if c["id"] not in room.used_track_ids:
                             card = c
                             break
                 except Exception as e:
@@ -275,7 +275,8 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 # If not set, will try to infer from first allowed origin by swapping host to backend
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")  # e.g., https://backend..up.railway.app/api/spotify/callback
-SPOTIFY_SCOPES = "playlist-read-private playlist-read-collaborative"
+# Include streaming and playback control for Web Playback SDK
+SPOTIFY_SCOPES = "playlist-read-private playlist-read-collaborative streaming user-read-playback-state user-modify-playback-state"
 
 # state -> hostId (short-lived)
 spotify_states: dict[str, dict] = {}
@@ -360,9 +361,10 @@ def _map_track_to_card(item: dict) -> dict | None:
         year = int(rd.split("-")[0]) if rd else None
         preview = t.get("preview_url")
         track_id = t.get("id") or t.get("uri") or t.get("href")
+        uri = t.get("uri") or (f"spotify:track:{track_id}" if track_id else None)
         if not (name and artists and year and track_id):
             return None
-        return {"id": track_id, "name": name, "artists": artists, "year": year, "preview_url": preview}
+        return {"id": track_id, "uri": uri, "name": name, "artists": artists, "year": year, "preview_url": preview}
     except:
         return None
 
@@ -407,6 +409,46 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
     # Build two lists: all valid cards (for player reference) and preview-only (for draws)
     with_preview = [c for c in cards if c.get("preview_url")]
     return (cards, with_preview)
+
+@app.get("/api/spotify/token")
+async def spotify_token(hostId: str):
+    token = await _get_valid_token(hostId)
+    if not token:
+        return Response("Not linked", status_code=401)
+    # Return access token with a short TTL hint
+    info = spotify_tokens.get(hostId) or {}
+    ttl = max(0, int(info.get("expires_at", 0)) - _now())
+    return {"access_token": token, "expires_in": ttl}
+
+@app.post("/api/spotify/play")
+async def spotify_play(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    uri = payload.get("uri")
+    if not host_id or not device_id or not uri:
+        return Response("Missing params", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Transfer playback to the Web Playback SDK device and start
+        try:
+            await client.put(
+                "https://api.spotify.com/v1/me/player",
+                headers=headers,
+                json={"device_ids": [device_id], "play": True},
+            )
+        except Exception:
+            pass
+        r = await client.put(
+            f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
+            headers=headers,
+            json={"uris": [uri]},
+        )
+    if r.status_code >= 400:
+        return Response(r.text, status_code=r.status_code)
+    return {"ok": True}
 
 @app.get("/api/spotify/login")
 def spotify_login(hostId: str):
