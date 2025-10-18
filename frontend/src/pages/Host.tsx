@@ -15,7 +15,13 @@ export default function Host() {
   const [qr, setQr] = useState<string>("");
   const [ws, setWs] = useState<any>(null);
   const [hostId, setHostId] = useState<string>("");
-  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || "http://localhost:8000").replace(/\/+$/,'');
+  function resolveDefaultBackendBase() {
+    if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
+      return "https://backend-production-f463.up.railway.app";
+    }
+    return "http://localhost:8000";
+  }
+  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveDefaultBackendBase()).replace(/\/+$/,'');
 
   async function createRoom() {
     try {
@@ -60,9 +66,12 @@ export default function Host() {
       <h1 className="text-3xl font-bold">HITSTER — Host</h1>
 
       {!room ? (
-        <button onClick={createRoom} className="mt-6 px-6 py-3 bg-emerald-600 rounded">
-          Create Room
-        </button>
+        <>
+          <button onClick={createRoom} className="mt-6 px-6 py-3 bg-emerald-600 rounded">
+            Create Room
+          </button>
+          <div className="mt-2 text-xs text-zinc-400">API: {API_BASE}</div>
+        </>
       ) : (
         <div className="mt-6 grid md:grid-cols-2 gap-6">
           <div className="p-4 rounded bg-zinc-800">

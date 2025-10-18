@@ -1,8 +1,22 @@
 export type WSEvent = { event: string; data: any };
 
+function resolveDefaultBackendBase() {
+  let base = "http://localhost:8000";
+  try {
+    if (typeof location !== "undefined") {
+      const host = location.host;
+      if (host === "frontend-production-62902.up.railway.app") {
+        base = "https://backend-production-f463.up.railway.app";
+      }
+    }
+  } catch {}
+  return base;
+}
+
 function buildWsUrl(code: string) {
   const cfg = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
-  let httpBase = (cfg && cfg.trim().length > 0 ? cfg : "http://localhost:8000").replace(/\/+$/,'');
+  const defaultBase = resolveDefaultBackendBase();
+  let httpBase = (cfg && cfg.trim().length > 0 ? cfg : defaultBase).replace(/\/+$/,'');
   try {
     const u = new URL(httpBase);
     const wsProto = u.protocol === "https:" ? "wss:" : "ws:";

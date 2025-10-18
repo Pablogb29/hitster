@@ -19,7 +19,11 @@ if origins_env:
         allow_origins = [p.rstrip("/") for p in parts if p]
         allow_credentials = True
 else:
-    allow_origins = ["http://localhost:5173"]
+    # Default allow localhost dev and the deployed frontend domain
+    allow_origins = [
+        "http://localhost:5173",
+        "https://frontend-production-62902.up.railway.app",
+    ]
     allow_credentials = True
 
 app.add_middleware(
