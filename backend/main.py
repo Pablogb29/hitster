@@ -228,6 +228,25 @@ def spotify_login(hostId: str):
     spotify_states[state] = {"hostId": hostId, "ts": _now()}
     return {"authorize_url": _build_auth_url(state), "state": state}
 
+def _choose_frontend_origin() -> str:
+    # Highest priority: explicit single-origin env vars
+    for key in ("FRONTEND_PUBLIC_URL", "FRONTEND_ORIGIN"):
+        val = os.getenv(key)
+        if val:
+            return val.rstrip('/')
+    # Next: from allow_origins, prefer https and non-localhost
+    origins = allow_origins or []
+    for prefer_https in (True, False):
+        for o in origins:
+            o2 = o.rstrip('/')
+            if "localhost" in o2:
+                continue
+            if prefer_https and not o2.startswith("https://"):
+                continue
+            return o2
+    # Fallback: first origin or localhost
+    return (origins[0].rstrip('/') if origins else "http://localhost:5173")
+
 @app.get("/api/spotify/callback")
 async def spotify_callback(code: str | None = None, state: str | None = None):
     if not code or not state or state not in spotify_states:
@@ -241,8 +260,7 @@ async def spotify_callback(code: str | None = None, state: str | None = None):
     except httpx.HTTPError as e:
         return Response(f"Token exchange failed: {e}", status_code=400)
     # Redirect user back to frontend host page (best-effort)
-    # Try to use first allowed origin
-    frontend = allow_origins[0] if allow_origins else "http://localhost:5173"
+    frontend = _choose_frontend_origin()
     loc = f"{frontend}/host?spotify=ok"
     return Response(status_code=302, headers={"Location": loc})
 
