@@ -240,7 +240,7 @@ export default function Join() {
         <div className="text-xs opacity-70">Estado UI: {status} â€¢ hostId: {hostId || 'n/a'} â€¢ device: {deviceId || 'n/a'}</div>
         <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
         <div className="mt-4 flex gap-2">
-          <button onClick={draw} className="px-3 py-2 bg-emerald-600 rounded">Play (draw)</button>
+          <button onClick={draw} disabled={playDisabled} className="px-3 py-2 bg-emerald-600 rounded disabled:opacity-50">{playDisabled ? '…' : 'Play (draw)'}</button>
           <button onClick={()=>guess('before')} className="px-3 py-2 bg-blue-600 rounded">Before</button>
           <button onClick={()=>guess('after')} className="px-3 py-2 bg-purple-600 rounded">After</button>
         </div>
@@ -276,7 +276,7 @@ export default function Join() {
               {!currentSong ? (
                 <>
                   <div className="mb-2 text-xs opacity-70">Device: {deviceId || 'n/a'} <button onClick={activateDevice} className="ml-2 px-2 py-1 bg-zinc-700 rounded">Activate</button></div>
-                  <button onClick={draw} className="px-4 py-2 bg-emerald-600 rounded">â–¶ Play</button>
+                  <button onClick={draw} disabled={playDisabled} className="px-4 py-2 bg-emerald-600 rounded disabled:opacity-50">▶ Play</button>
                 </>
               ) : (
                 <div>
@@ -296,4 +296,5 @@ export default function Join() {
     </div>
   );
 }
+
 
