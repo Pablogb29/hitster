@@ -19,7 +19,11 @@ export default function Host() {
 
   async function createRoom() {
     try {
-      const r = await fetch(`${API_BASE}/api/create-room`).then(r=>r.json());
+      const res = await fetch(`${API_BASE}/api/create-room`, { mode: 'cors' as RequestMode });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      const r = await res.json();
       setRoom({ code: r.code, players: [], state: "lobby", turnIndex: 0 });
       setHostId(r.hostId);
       const url = `${location.origin}/join?code=${r.code}`;
