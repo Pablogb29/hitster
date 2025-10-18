@@ -15,7 +15,8 @@ export default function Join() {
     const ws = connectWS(code, () => {
       // puedes manejar room:state aquí si quieres ver info
     });
-    ws.send("join", { id: playerId, name, isHost: false });
+    // Backend expects snake_case field name `is_host`
+    ws.send("join", { id: playerId, name, is_host: false });
     setConn(ws);
     setJoined(true);
   };

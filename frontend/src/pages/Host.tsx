@@ -18,24 +18,30 @@ export default function Host() {
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || "http://localhost:8000").replace(/\/+$/,'');
 
   async function createRoom() {
-    const r = await fetch(`${API_BASE}/api/create-room`).then(r=>r.json());
-    setRoom({ code: r.code, players: [], state: "lobby", turnIndex: 0 });
-    setHostId(r.hostId);
-    const url = `${location.origin}/join?code=${r.code}`;
-    setQr(await QRCode.toDataURL(url));
+    try {
+      const r = await fetch(`${API_BASE}/api/create-room`).then(r=>r.json());
+      setRoom({ code: r.code, players: [], state: "lobby", turnIndex: 0 });
+      setHostId(r.hostId);
+      const url = `${location.origin}/join?code=${r.code}`;
+      setQr(await QRCode.toDataURL(url));
 
-    const conn = connectWS(r.code, (e) => {
-      if (e.event === "room:state" || e.event === "game:start") setRoom(e.data);
-      if (e.event === "turn:begin") {
-        setRoom(prev => {
-          if (!prev) return prev;
-          const idx = prev.players.findIndex(p => p.id === e.data.playerId);
-          return { ...prev, turnIndex: idx };
-        });
-      }
-    });
-    setWs(conn);
-    conn.send("join", { id: r.hostId, name: "HOST", isHost: true });
+      const conn = connectWS(r.code, (e) => {
+        if (e.event === "room:state" || e.event === "game:start") setRoom(e.data);
+        if (e.event === "turn:begin") {
+          setRoom(prev => {
+            if (!prev) return prev;
+            const idx = prev.players.findIndex(p => p.id === e.data.playerId);
+            return { ...prev, turnIndex: idx };
+          });
+        }
+      });
+      setWs(conn);
+      // Backend expects snake_case field name `is_host`
+      conn.send("join", { id: r.hostId, name: "HOST", is_host: true });
+    } catch (err) {
+      console.error("Failed to create room:", err);
+      alert("Failed to create room. Check BACKEND URL configuration.");
+    }
   }
 
   function startGame() {
