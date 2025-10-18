@@ -75,8 +75,8 @@ def first_player_index(room: Room) -> int:
 # REST
 # -------------------------------
 @app.get("/api/create-room")
-def create_room():
-    host_id = f"host-{random.randint(1000,9999)}"
+def create_room(hostId: str | None = None):
+    host_id = hostId or f"host-{random.randint(1000,9999)}"
     code = code4()
     room = Room(code=code, hostId=host_id, players=[])
     rooms[code] = room
@@ -261,7 +261,7 @@ async def spotify_callback(code: str | None = None, state: str | None = None):
         return Response(f"Token exchange failed: {e}", status_code=400)
     # Redirect user back to frontend host page (best-effort)
     frontend = _choose_frontend_origin()
-    loc = f"{frontend}/host?spotify=ok"
+    loc = f"{frontend}/host?spotify=ok&hostId={host_id}"
     return Response(status_code=302, headers={"Location": loc})
 
 @app.get("/api/spotify/status")

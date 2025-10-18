@@ -30,7 +30,9 @@ export default function Host() {
 
   async function createRoom() {
     try {
-      const res = await fetch(`${API_BASE}/api/create-room`, { mode: 'cors' as RequestMode });
+      const url = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}`
+                         : `${API_BASE}/api/create-room`;
+      const res = await fetch(url, { mode: 'cors' as RequestMode });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
@@ -67,6 +69,29 @@ export default function Host() {
       alert("Failed to create room. Check BACKEND URL configuration.");
     }
   }
+
+  // On mount, pick up hostId from URL (after Spotify callback)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const hid = params.get('hostId');
+      const spok = params.get('spotify');
+      if (hid) {
+        setHostId(hid);
+      }
+      if (hid && spok === 'ok') {
+        // Check linked status and preload playlists
+        fetch(`${API_BASE}/api/spotify/status?hostId=${hid}`).then(r=>r.json()).then(st => {
+          setSpotifyLinked(!!st?.linked);
+          if (st?.linked) {
+            fetch(`${API_BASE}/api/spotify/playlists?hostId=${hid}`).then(r=>r.json()).then(pls => {
+              setPlaylists(pls?.items || []);
+            }).catch(()=>{});
+          }
+        }).catch(()=>{});
+      }
+    } catch {}
+  }, []);
 
   async function testBackend() {
     setHealth("testing...");
