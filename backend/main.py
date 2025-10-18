@@ -101,7 +101,10 @@ async def ws_room(ws: WebSocket, code: str):
     try:
         while True:
             raw = await ws.receive_text()
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
             event, data = msg.get("event"), msg.get("data", {})
             room = rooms.get(code)
             if not room:
@@ -126,12 +129,16 @@ async def ws_room(ws: WebSocket, code: str):
                     continue
                 if len(room.players) < 2:
                     continue
-                # Load playlist deck (selected or default to 'Hitster')
-                pl_id = data.get("playlistId")
-                pl_name = data.get("playlistName") or (room.selectedPlaylistName or "Hitster")
-                deck = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
-                if len(deck) < 2:
-                    await broadcast(code, "game:error", {"message": "Playlist not playable (need >=2 with preview)"})
+                try:
+                    # Load playlist deck (selected or default to 'Hitster')
+                    pl_id = data.get("playlistId")
+                    pl_name = data.get("playlistName") or (room.selectedPlaylistName or "Hitster")
+                    deck = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
+                    if len(deck) < 2:
+                        await broadcast(code, "game:error", {"message": "Playlist not playable (need >=2 with preview)"})
+                        continue
+                except Exception as e:
+                    await broadcast(code, "game:error", {"message": f"Failed to load playlist: {e}"})
                     continue
                 room.deck = deck
                 room.used_track_ids = set()
@@ -176,14 +183,18 @@ async def ws_room(ws: WebSocket, code: str):
                     continue
                 # draw next unused card from remaining deck
                 card = None
-                # try up to len(deck) times
-                for _ in range(max(1, len(room.deck))):
-                    if not room.deck:
-                        break
-                    c = room.deck.pop()
-                    if c["id"] not in room.used_track_ids and c.get("preview_url"):
-                        card = c
-                        break
+                try:
+                    # try up to len(deck) times
+                    for _ in range(max(1, len(room.deck))):
+                        if not room.deck:
+                            break
+                        c = room.deck.pop()
+                        if c["id"] not in room.used_track_ids and c.get("preview_url"):
+                            card = c
+                            break
+                except Exception as e:
+                    await broadcast(code, "game:error", {"message": f"Draw failed: {e}"})
+                    continue
                 if not card:
                     await broadcast(code, "game:finished", {"reason": "No more songs"})
                     room.state = "finished"
