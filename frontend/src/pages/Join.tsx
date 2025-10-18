@@ -5,6 +5,7 @@ import { connectWS } from "../lib/ws";
 export default function Join() {
   const [params] = useSearchParams();
   const codeParam = params.get("code") ?? "";
+  const safeMode = (params.get("safe") || "").trim() === "1";
   const [code, setCode] = useState(codeParam);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
@@ -144,6 +145,22 @@ export default function Join() {
       player.connect();
     };
   }, [joined, hostId]);
+
+  if (safeMode && joined) {
+    return (
+      <div className="min-h-screen bg-zinc-900 text-white p-6">
+        <h2 className="text-xl font-semibold">Sala {code} (safe mode)</h2>
+        <div className="text-xs opacity-70">Estado UI: {status} • hostId: {hostId || 'n/a'} • device: {deviceId || 'n/a'}</div>
+        <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
+        <div className="mt-4 flex gap-2">
+          <button onClick={draw} className="px-3 py-2 bg-emerald-600 rounded">Play (draw)</button>
+          <button onClick={()=>guess('before')} className="px-3 py-2 bg-blue-600 rounded">Before</button>
+          <button onClick={()=>guess('after')} className="px-3 py-2 bg-purple-600 rounded">After</button>
+        </div>
+        <pre className="mt-4 text-xs bg-zinc-800 p-3 rounded overflow-auto max-h-64">{JSON.stringify({ myTurn, playerCard, currentSong, wins }, null, 2)}</pre>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-900 text-white p-6">
