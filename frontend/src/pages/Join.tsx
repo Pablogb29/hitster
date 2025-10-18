@@ -83,11 +83,9 @@ export default function Join() {
           setWins(data.wins || {});
           setCurrentSong(data.song || null);
           // Ensure playback is stopped when result is shown
-          try {
-            if (hostId) {
-              await fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })});
-            }
-          } catch {}
+          if (hostId) {
+            fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })}).catch(()=>{});
+          }
         }
         else if (e.event === "game:finished") {
           const data = e.data || {};
