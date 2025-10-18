@@ -187,7 +187,8 @@ export default function Join() {
   const draw = async () => {
     await ensureActivation();
     if (!connRef.current) return;
-    connRef.current.send("turn:draw", { playerId });
+    // include deviceId so backend can trigger playback server-side
+    connRef.current.send("turn:draw", { playerId, deviceId });
   };
 
   async function activateDevice() {

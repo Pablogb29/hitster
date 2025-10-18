@@ -187,6 +187,7 @@ async def ws_room(ws: WebSocket, code: str):
             elif event == "turn:draw":
                 # Only current player can draw
                 pid = data.get("playerId")
+                device_id = data.get("deviceId")
                 if not room or room.state != "playing":
                     continue
                 current_id = room.players[room.turnIndex].id
@@ -215,6 +216,14 @@ async def ws_room(ws: WebSocket, code: str):
                 # Send play event (hide year initially)
                 payload = {k: v for k, v in card.items() if k != "year"}
                 await broadcast(code, "turn:play", {"playerId": pid, "song": payload})
+                # If the client provided a device id, attempt to start playback server-side
+                try:
+                    if device_id and card.get("uri"):
+                        status, _ = await _queue_next_core(room.hostId, device_id, card["uri"])
+                        if status and status >= 400:
+                            await broadcast(code, "game:error", {"message": f"queue_next failed: HTTP {status}"})
+                except Exception as e:
+                    await broadcast(code, "game:error", {"message": f"queue_next exception: {e}"})
 
             elif event == "turn:guess":
                 # Validate and score
@@ -501,23 +510,13 @@ async def spotify_pause(payload: dict):
         )
     return Response(r.text, status_code=r.status_code)
 
-@app.post("/api/spotify/queue_next")
-async def spotify_queue_next(payload: dict):
-    """Add a track to the queue then skip to next, ensuring it starts on the SDK device.
-    Expects: { hostId, device_id, uri }
-    """
-    host_id = payload.get("hostId")
-    device_id = payload.get("device_id")
-    uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get('id') else None)
-    if not host_id or not device_id or not uri:
-        return Response("Missing params", status_code=400)
+async def _queue_next_core(host_id: str, device_id: str, uri: str) -> tuple[int, str]:
     token = await _get_valid_token(host_id)
     if not token:
-        return Response("Not linked", status_code=401)
+        return (401, "Not linked")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     print(f"[queue_next] host={host_id} device={device_id} uri={uri}")
     async with httpx.AsyncClient(timeout=20) as client:
-        # Stop current song to avoid overlap/context issues
         try:
             await client.put(
                 f"https://api.spotify.com/v1/me/player/pause?device_id={device_id}",
@@ -525,7 +524,6 @@ async def spotify_queue_next(payload: dict):
             )
         except Exception:
             pass
-        # Ensure device is the active one
         try:
             await client.put(
                 "https://api.spotify.com/v1/me/player",
@@ -534,21 +532,27 @@ async def spotify_queue_next(payload: dict):
             )
         except Exception:
             pass
-        # Queue the track on that device
         q = await client.post(
             f"https://api.spotify.com/v1/me/player/queue?uri={uri}&device_id={device_id}",
             headers=headers,
         )
-        # Skip to next (the queued track)
+        if q.status_code >= 400:
+            return (q.status_code, q.text)
         n = await client.post(
             f"https://api.spotify.com/v1/me/player/next?device_id={device_id}",
             headers=headers,
         )
-    if q.status_code >= 400:
-        return Response(q.text, status_code=q.status_code)
-    if n.status_code >= 400:
-        return Response(n.text, status_code=n.status_code)
-    return Response(status_code=204)
+        return (n.status_code, n.text)
+
+@app.post("/api/spotify/queue_next")
+async def spotify_queue_next(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get('id') else None)
+    if not host_id or not device_id or not uri:
+        return Response("Missing params", status_code=400)
+    status, text = await _queue_next_core(host_id, device_id, uri)
+    return Response(text, status_code=status if status else 204)
 
 @app.post("/api/spotify/next")
 async def spotify_next(payload: dict):
