@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { connectWS } from "../lib/ws";
 
@@ -16,6 +16,9 @@ export default function Join() {
   const [currentSong, setCurrentSong] = useState<any>(null);
   const connRef = useRef<any>(null);
   const playerRef = useRef<any>(null);
+  const playLockRef = useRef<boolean>(false);
+  const lastTurnIdRef = useRef<string | null>(null);
+  const [playDisabled, setPlayDisabled] = useState(false);
   const [hostId, setHostId] = useState<string>("");
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
@@ -54,6 +57,11 @@ export default function Join() {
         }
         else if (e.event === "turn:play") {
           const data = e.data || {};
+          if (data.turnId && lastTurnIdRef.current === data.turnId) {
+            setStatus(prev=>`dup turn ignored â€¢ `+prev);
+            return;
+          }
+          if (data.turnId) lastTurnIdRef.current = data.turnId;
           if (data.playerId === playerId) {
             setCurrentSong(data.song || null);
             // Queue-and-next with fallback to play_track
@@ -66,18 +74,18 @@ export default function Join() {
                   method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
                   body: JSON.stringify({ hostId, device_id: deviceId, uri, id })
                 });
-                if (q.ok) { setStatus(prev=>`queue_next OK • `+prev); return; }
+                if (q.ok) { setStatus(prev=>`queue_next OK â€¢ `+prev); return; }
                 const qt = await q.text().catch(()=>"");
-                setStatus(prev=>`queue_next ${q.status}: ${qt} • `+prev);
+                setStatus(prev=>`queue_next ${q.status}: ${qt} â€¢ `+prev);
                 // Fallback: play_track
                 const p = await fetch(`${API_BASE}/api/spotify/play_track`, {
                   method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
                   body: JSON.stringify({ hostId, device_id: deviceId, uri, id })
                 });
-                if (p.ok) setStatus(prev=>`play_track OK • `+prev);
-                else setStatus(prev=>`play_track ${p.status} • `+prev);
+                if (p.ok) setStatus(prev=>`play_track OK â€¢ `+prev);
+                else setStatus(prev=>`play_track ${p.status} â€¢ `+prev);
               } catch (err:any) {
-                setStatus(prev=>`play flow err: ${err?.message||err} • `+prev);
+                setStatus(prev=>`play flow err: ${err?.message||err} â€¢ `+prev);
               }
             })();
             
@@ -146,7 +154,7 @@ export default function Join() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ hostId, device_id: device_id, play: false })
             });
-            setStatus(prev => `transfer ${r.status} • ` + prev);
+            setStatus(prev => `transfer ${r.status} â€¢ ` + prev);
           } catch {}
         });
         player.addListener('not_ready', () => {
@@ -164,10 +172,10 @@ export default function Join() {
       const p: any = playerRef.current;
       if (p && typeof p.activateElement === 'function') {
         await p.activateElement();
-        setStatus(prev => `activated • ` + prev);
+        setStatus(prev => `activated â€¢ ` + prev);
       }
     } catch (e:any) {
-      setStatus(prev => `activate err: ${e?.message||e} • ` + prev);
+      setStatus(prev => `activate err: ${e?.message||e} â€¢ ` + prev);
     }
   }
 
@@ -175,7 +183,7 @@ export default function Join() {
     return (
       <div className="min-h-screen bg-zinc-900 text-white p-6">
         <h1 className="text-2xl font-bold">Unirse a sala</h1>
-        <input value={code} onChange={e=>setCode(e.target.value)} placeholder="Código"
+        <input value={code} onChange={e=>setCode(e.target.value)} placeholder="CÃ³digo"
                className="mt-4 px-3 py-2 rounded bg-zinc-800 w-full"/>
         <input value={name} onChange={e=>setName(e.target.value)} placeholder="Tu nombre"
                className="mt-3 px-3 py-2 rounded bg-zinc-800 w-full"/>
@@ -185,10 +193,19 @@ export default function Join() {
     );
 
   const draw = async () => {
-    await ensureActivation();
-    if (!connRef.current) return;
-    // include deviceId so backend can trigger playback server-side
-    connRef.current.send("turn:draw", { playerId, deviceId });
+    if (playLockRef.current) return;
+    playLockRef.current = true;
+    setPlayDisabled(true);
+    try {
+      await ensureActivation();
+      if (!connRef.current) return;
+      // include deviceId so backend can trigger playback server-side
+      connRef.current.send("turn:draw", { playerId, deviceId });
+      setStatus(prev=>`draw sent â€¢ `+prev);
+    } finally {
+      playLockRef.current = false;
+      setPlayDisabled(false);
+    }
   };
 
   async function activateDevice() {
@@ -198,9 +215,9 @@ export default function Join() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hostId, device_id: deviceId, play: true })
       });
-      setStatus(prev => `manual transfer ${r.status} • ` + prev);
+      setStatus(prev => `manual transfer ${r.status} â€¢ ` + prev);
     } catch (e:any) {
-      setStatus(prev => `transfer err: ${e?.message||e} • ` + prev);
+      setStatus(prev => `transfer err: ${e?.message||e} â€¢ ` + prev);
     }
   }
 
@@ -220,7 +237,7 @@ export default function Join() {
     return (
       <div className="min-h-screen bg-zinc-900 text-white p-6">
         <h2 className="text-xl font-semibold">Sala {code} (safe mode)</h2>
-        <div className="text-xs opacity-70">Estado UI: {status} • hostId: {hostId || 'n/a'} • device: {deviceId || 'n/a'}</div>
+        <div className="text-xs opacity-70">Estado UI: {status} â€¢ hostId: {hostId || 'n/a'} â€¢ device: {deviceId || 'n/a'}</div>
         <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
         <div className="mt-4 flex gap-2">
           <button onClick={draw} className="px-3 py-2 bg-emerald-600 rounded">Play (draw)</button>
@@ -235,7 +252,7 @@ export default function Join() {
   return (
     <div className="min-h-screen bg-zinc-900 text-white p-6">
       <h2 className="text-xl font-semibold">Sala {code}</h2>
-      <div className="mt-1 text-xs opacity-70">Estado: {status} • hostId: {hostId || 'n/a'} • device: {deviceId || 'n/a'}</div>
+      <div className="mt-1 text-xs opacity-70">Estado: {status} â€¢ hostId: {hostId || 'n/a'} â€¢ device: {deviceId || 'n/a'}</div>
       <div className="text-xs opacity-70">WS: {WS_DEBUG_URL}</div>
       <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
       <div className="mt-4 grid md:grid-cols-2 gap-6">
@@ -245,7 +262,7 @@ export default function Join() {
             <div className="mt-2 border border-zinc-700 rounded p-3">
               <div className="text-lg font-semibold">{playerCard.name}</div>
               <div className="opacity-80">{playerCard.artists}</div>
-              <div className="opacity-80">Año: {playerCard.year}</div>
+              <div className="opacity-80">AÃ±o: {playerCard.year}</div>
             </div>
           ) : (
             <div className="mt-2 text-sm opacity-70">Esperando inicio...</div>
@@ -259,14 +276,14 @@ export default function Join() {
               {!currentSong ? (
                 <>
                   <div className="mb-2 text-xs opacity-70">Device: {deviceId || 'n/a'} <button onClick={activateDevice} className="ml-2 px-2 py-1 bg-zinc-700 rounded">Activate</button></div>
-                  <button onClick={draw} className="px-4 py-2 bg-emerald-600 rounded">▶ Play</button>
+                  <button onClick={draw} className="px-4 py-2 bg-emerald-600 rounded">â–¶ Play</button>
                 </>
               ) : (
                 <div>
-                  <div className="text-xs opacity-70">Reproduciendo vía Spotify: {currentSong?.name} — {currentSong?.artists}</div>
+                  <div className="text-xs opacity-70">Reproduciendo vÃ­a Spotify: {currentSong?.name} â€” {currentSong?.artists}</div>
                   <div className="mt-3 flex gap-2">
                     <button onClick={()=>guess("before")} className="px-3 py-2 bg-blue-600 rounded">Antes</button>
-                    <button onClick={()=>guess("after")} className="px-3 py-2 bg-purple-600 rounded">Después</button>
+                    <button onClick={()=>guess("after")} className="px-3 py-2 bg-purple-600 rounded">DespuÃ©s</button>
                   </div>
                 </div>
               )}
@@ -279,3 +296,4 @@ export default function Join() {
     </div>
   );
 }
+

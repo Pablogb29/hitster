@@ -65,6 +65,7 @@ class Room(BaseModel):
     current_song: dict | None = None  # current SongCard in play
     selectedPlaylistId: str | None = None
     selectedPlaylistName: str | None = None
+    currentTurnId: str | None = None
 
 rooms: dict[str, Room] = {}
 clients: dict[str, list[WebSocket]] = {}
@@ -215,7 +216,9 @@ async def ws_room(ws: WebSocket, code: str):
                 room.used_track_ids.add(card["id"])
                 # Send play event (hide year initially)
                 payload = {k: v for k, v in card.items() if k != "year"}
-                await broadcast(code, "turn:play", {"playerId": pid, "song": payload})
+                turn_id = code4() + code4()
+                room.currentTurnId = turn_id
+                await broadcast(code, "turn:play", {"playerId": pid, "song": payload, "turnId": turn_id})
                 # If the client provided a device id, attempt to start playback server-side
                 try:
                     if device_id and card.get("uri"):
@@ -517,32 +520,38 @@ async def _queue_next_core(host_id: str, device_id: str, uri: str) -> tuple[int,
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     print(f"[queue_next] host={host_id} device={device_id} uri={uri}")
     async with httpx.AsyncClient(timeout=20) as client:
+        pause_code = transfer_code = queue_code = next_code = None
         try:
-            await client.put(
+            pr = await client.put(
                 f"https://api.spotify.com/v1/me/player/pause?device_id={device_id}",
                 headers=headers,
             )
+            pause_code = pr.status_code
         except Exception:
-            pass
+            pause_code = -1
         try:
-            await client.put(
+            tr = await client.put(
                 "https://api.spotify.com/v1/me/player",
                 headers=headers,
                 json={"device_ids": [device_id], "play": False},
             )
+            transfer_code = tr.status_code
         except Exception:
-            pass
-        q = await client.post(
+            transfer_code = -1
+        qr = await client.post(
             f"https://api.spotify.com/v1/me/player/queue?uri={uri}&device_id={device_id}",
             headers=headers,
         )
-        if q.status_code >= 400:
-            return (q.status_code, q.text)
-        n = await client.post(
+        queue_code = qr.status_code
+        nr = await client.post(
             f"https://api.spotify.com/v1/me/player/next?device_id={device_id}",
             headers=headers,
         )
-        return (n.status_code, n.text)
+        next_code = nr.status_code
+        print(f"[queue_next] steps pause={pause_code} transfer={transfer_code} queue={queue_code} next={next_code}")
+        if queue_code and queue_code >= 400:
+            return (queue_code, qr.text)
+        return (next_code, nr.text)
 
 @app.post("/api/spotify/queue_next")
 async def spotify_queue_next(payload: dict):
