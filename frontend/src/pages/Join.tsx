@@ -16,7 +16,7 @@ export default function Join() {
   const connRef = useRef<any>(null);
   const [hostId, setHostId] = useState<string>("");
   const [deviceId, setDeviceId] = useState<string>("");
-  const [playerReady, setPlayerReady] = useState(false);
+  const [, setPlayerReady] = useState(false);
 
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + '//' + location.host))
     .replace(/\/+$/, '')
