@@ -15,6 +15,7 @@ export default function Join() {
   const [myTurn, setMyTurn] = useState(false);
   const [currentSong, setCurrentSong] = useState<any>(null);
   const connRef = useRef<any>(null);
+  const playerRef = useRef<any>(null);
   const [hostId, setHostId] = useState<string>("");
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
@@ -62,7 +63,16 @@ export default function Join() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ hostId, device_id: deviceId, uri })
-              }).catch(()=>{});
+              }).then(async (r)=>{
+                if (!r.ok) {
+                  const t = await r.text().catch(()=>"(no body)");
+                  setStatus(prev=>`play ${r.status}: ${t} • `+prev);
+                } else {
+                  setStatus(prev=>`play OK • `+prev);
+                }
+              }).catch((err)=>{
+                setStatus(prev=>`play fetch err: ${err?.message||err} • `+prev);
+              });
             }
           } else {
             setCurrentSong(null);
@@ -113,6 +123,7 @@ export default function Join() {
           },
           volume: 0.8,
         });
+        playerRef.current = player;
         player.addListener('ready', ({ device_id }: any) => {
           setDeviceId(device_id);
           setPlayerReady(true);
@@ -128,6 +139,18 @@ export default function Join() {
     init();
   }, [joined, hostId]);
 
+  async function ensureActivation() {
+    try {
+      const p: any = playerRef.current;
+      if (p && typeof p.activateElement === 'function') {
+        await p.activateElement();
+        setStatus(prev => `activated • ` + prev);
+      }
+    } catch (e:any) {
+      setStatus(prev => `activate err: ${e?.message||e} • ` + prev);
+    }
+  }
+
   if (!joined)
     return (
       <div className="min-h-screen bg-zinc-900 text-white p-6">
@@ -141,7 +164,8 @@ export default function Join() {
       </div>
     );
 
-  const draw = () => {
+  const draw = async () => {
+    await ensureActivation();
     if (!connRef.current) return;
     connRef.current.send("turn:draw", { playerId });
   };
