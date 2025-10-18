@@ -116,7 +116,7 @@ async def ws_room(ws: WebSocket, code: str):
                     seat += 1
                 p.seat = seat
                 room.players.append(p)
-                await broadcast(code, "room:state", room.model_dump())
+                await broadcast(code, "room:state", room.model_dump(mode="json"))
 
             elif event == "start":
                 # Solo host, estado lobby y al menos 2 jugadores
