@@ -134,8 +134,11 @@ async def ws_room(ws: WebSocket, code: str):
                     pl_id = data.get("playlistId")
                     pl_name = data.get("playlistName") or (room.selectedPlaylistName or "Hitster")
                     all_cards, play_cards = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
-                    if len(play_cards) < 1:
-                        await broadcast(code, "game:error", {"message": "Playlist not playable (need >=1 with preview)"})
+                    # Require enough tracks to assign one per non-host player plus at least one to draw
+                    non_host = [p for p in room.players if not p.is_host]
+                    needed = len(non_host) + 1
+                    if len(all_cards) < needed:
+                        await broadcast(code, "game:error", {"message": f"Playlist not playable (need >= {needed} tracks with year)"})
                         continue
                 except Exception as e:
                     await broadcast(code, "game:error", {"message": f"Failed to load playlist: {e}"})
@@ -165,7 +168,7 @@ async def ws_room(ws: WebSocket, code: str):
                 # start game
                 room.state = "playing"
                 room.turnIndex = first_player_index(room)
-                # Build draw deck from ALL tracks now (Web Playback SDK handles playback)
+                # Build draw deck from ALL remaining tracks now (Web Playback SDK handles playback)
                 room.deck = [c for c in all_cards if c["id"] not in room.used_track_ids]
                 random.shuffle(room.deck)
                 await broadcast(code, "game:init", {
