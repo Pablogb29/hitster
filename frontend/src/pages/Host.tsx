@@ -15,6 +15,7 @@ export default function Host() {
   const [qr, setQr] = useState<string>("");
   const [ws, setWs] = useState<any>(null);
   const [hostId, setHostId] = useState<string>("");
+  const [health, setHealth] = useState<string>("");
   function resolveDefaultBackendBase() {
     if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
       return "https://backend-production-f463.up.railway.app";
@@ -54,6 +55,18 @@ export default function Host() {
     }
   }
 
+  async function testBackend() {
+    setHealth("testing...");
+    try {
+      const res = await fetch(`${API_BASE}/api/health`, { mode: 'cors' as RequestMode });
+      const data = await res.json();
+      setHealth(`ok: ${res.status} ${JSON.stringify(data)}`);
+    } catch (e: any) {
+      console.error("Health check failed", e);
+      setHealth(`error: ${e?.message || e}`);
+    }
+  }
+
   function startGame() {
     if (!ws || !room) return;
     ws.send("start", { hostId });
@@ -71,6 +84,10 @@ export default function Host() {
             Create Room
           </button>
           <div className="mt-2 text-xs text-zinc-400">API: {API_BASE}</div>
+          <div className="mt-2">
+            <button onClick={testBackend} className="px-3 py-1 text-xs bg-zinc-700 rounded">Test Backend</button>
+            {health && <div className="mt-1 text-xs">Health: {health}</div>}
+          </div>
         </>
       ) : (
         <div className="mt-6 grid md:grid-cols-2 gap-6">
