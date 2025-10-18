@@ -56,26 +56,31 @@ export default function Join() {
           const data = e.data || {};
           if (data.playerId === playerId) {
             setCurrentSong(data.song || null);
-            // Queue-and-skip approach: add to queue, then next, so Spotify starts our track
+            // Queue-and-next with fallback to play_track
             const uri = data.song?.uri;
-            if (!uri) {
-              setStatus(prev=>`no uri in song • `+prev);
-            }
-            if (deviceId && (uri || data.song?.id) && hostId) {
-              fetch(`${API_BASE}/api/spotify/queue_next`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostId, device_id: deviceId, uri, id: data.song?.id })
-              }).then(async (r)=>{
-                if (!r.ok) {
-                  const t = await r.text().catch(()=>"(no body)");
-                  setStatus(prev=>`queue_next ${r.status}: ${t} • `+prev);
-                } else {
-                  setStatus(prev=>`queue_next OK • `+prev);
-                }
-              }).catch((err)=>{
-                setStatus(prev=>`queue_next err: ${err?.message||err} • `+prev);
-              });
-            }
+            const id = data.song?.id as string | undefined;
+            if (!deviceId || !hostId) return;
+            (async () => {
+              try {
+                const q = await fetch(`${API_BASE}/api/spotify/queue_next`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                  body: JSON.stringify({ hostId, device_id: deviceId, uri, id })
+                });
+                if (q.ok) { setStatus(prev=>`queue_next OK • `+prev); return; }
+                const qt = await q.text().catch(()=>"");
+                setStatus(prev=>`queue_next ${q.status}: ${qt} • `+prev);
+                // Fallback: play_track
+                const p = await fetch(`${API_BASE}/api/spotify/play_track`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                  body: JSON.stringify({ hostId, device_id: deviceId, uri, id })
+                });
+                if (p.ok) setStatus(prev=>`play_track OK • `+prev);
+                else setStatus(prev=>`play_track ${p.status} • `+prev);
+              } catch (err:any) {
+                setStatus(prev=>`play flow err: ${err?.message||err} • `+prev);
+              }
+            })();
+            
           } else {
             setCurrentSong(null);
           }

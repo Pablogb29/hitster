@@ -515,6 +515,7 @@ async def spotify_queue_next(payload: dict):
     if not token:
         return Response("Not linked", status_code=401)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    print(f"[queue_next] host={host_id} device={device_id} uri={uri}")
     async with httpx.AsyncClient(timeout=20) as client:
         # Stop current song to avoid overlap/context issues
         try:
@@ -547,7 +548,7 @@ async def spotify_queue_next(payload: dict):
         return Response(q.text, status_code=q.status_code)
     if n.status_code >= 400:
         return Response(n.text, status_code=n.status_code)
-    return {"ok": True}
+    return Response(status_code=204)
 
 @app.post("/api/spotify/next")
 async def spotify_next(payload: dict):
@@ -563,6 +564,35 @@ async def spotify_next(payload: dict):
         r = await client.post(
             "https://api.spotify.com/v1/me/player/next" + (f"?device_id={device_id}" if device_id else ""),
             headers=headers,
+        )
+    return Response(r.text, status_code=r.status_code)
+
+@app.post("/api/spotify/play_track")
+async def spotify_play_track(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get("id") else None)
+    if not host_id or not device_id or not uri:
+        return Response("Missing params", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    print(f"[play_track] host={host_id} device={device_id} uri={uri}")
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Ensure device is active, do not autoplay previous context
+        try:
+            await client.put(
+                "https://api.spotify.com/v1/me/player",
+                headers=headers,
+                json={"device_ids": [device_id], "play": False},
+            )
+        except Exception:
+            pass
+        r = await client.put(
+            f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
+            headers=headers,
+            json={"uris": [uri]},
         )
     return Response(r.text, status_code=r.status_code)
 
