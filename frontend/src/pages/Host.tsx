@@ -22,6 +22,19 @@ export default function Host() {
   const [wins, setWins] = useState<Record<string, number>>({});
   const [currentTurn, setCurrentTurn] = useState<string>("");
   const [lastResult, setLastResult] = useState<any>(null);
+  
+  function drawForCurrent() {
+    if (!ws || !room) return;
+    const pid = currentTurn || (room.turnIndex !== undefined ? room.players[room.turnIndex]?.id : "");
+    if (!pid) return;
+    ws.send("turn:draw", { playerId: pid });
+  }
+  function guessForCurrent(choice: 'before'|'after') {
+    if (!ws || !room) return;
+    const pid = currentTurn || (room.turnIndex !== undefined ? room.players[room.turnIndex]?.id : "");
+    if (!pid) return;
+    ws.send("turn:guess", { playerId: pid, choice });
+  }
   const [gameError, setGameError] = useState<string>("");
   function resolveDefaultBackendBase() {
     if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
@@ -175,6 +188,13 @@ export default function Host() {
             >
               Start Game
             </button>
+            {room.state === 'playing' && (
+              <div className="mt-3 flex gap-2">
+                <button onClick={drawForCurrent} className="px-3 py-2 bg-emerald-700 rounded text-sm">Debug: Draw</button>
+                <button onClick={()=>guessForCurrent('before')} className="px-3 py-2 bg-zinc-700 rounded text-sm">Debug: Before</button>
+                <button onClick={()=>guessForCurrent('after')} className="px-3 py-2 bg-zinc-700 rounded text-sm">Debug: After</button>
+              </div>
+            )}
             {gameError && (
               <div className="mt-2 text-sm text-red-400">{gameError}</div>
             )}
