@@ -1,25 +1,39 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import random, string, json, os
+import random, string, json, os, re
 
 app = FastAPI()
 
 # CORS configuration: allow frontend origin(s) from env for Railway
-# FRONTEND_ORIGINS can be a comma-separated list of origins.
+# FRONTEND_ORIGINS may be:
+#   - '*' to allow all (credentials disabled)
+#   - comma or whitespace separated list of origins
 origins_env = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_ORIGIN")
 if origins_env:
-    allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+    if origins_env.strip() == "*":
+        allow_origins = ["*"]
+        allow_credentials = False
+    else:
+        parts = re.split(r"[\s,]+", origins_env.strip())
+        allow_origins = [p.rstrip("/") for p in parts if p]
+        allow_credentials = True
 else:
     allow_origins = ["http://localhost:5173"]
+    allow_credentials = True
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Health endpoint for connectivity checks
+@app.get("/api/health")
+def health():
+    return {"ok": True}
 
 # -------------------------------
 # Estado en memoria / Modelos
