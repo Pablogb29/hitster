@@ -58,10 +58,13 @@ export default function Join() {
             setCurrentSong(data.song || null);
             // Queue-and-skip approach: add to queue, then next, so Spotify starts our track
             const uri = data.song?.uri;
-            if (deviceId && uri && hostId) {
+            if (!uri) {
+              setStatus(prev=>`no uri in song • `+prev);
+            }
+            if (deviceId && (uri || data.song?.id) && hostId) {
               fetch(`${API_BASE}/api/spotify/queue_next`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostId, device_id: deviceId, uri })
+                body: JSON.stringify({ hostId, device_id: deviceId, uri, id: data.song?.id })
               }).then(async (r)=>{
                 if (!r.ok) {
                   const t = await r.text().catch(()=>"(no body)");

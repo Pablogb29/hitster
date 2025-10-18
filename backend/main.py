@@ -508,7 +508,7 @@ async def spotify_queue_next(payload: dict):
     """
     host_id = payload.get("hostId")
     device_id = payload.get("device_id")
-    uri = payload.get("uri")
+    uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get('id') else None)
     if not host_id or not device_id or not uri:
         return Response("Missing params", status_code=400)
     token = await _get_valid_token(host_id)
@@ -516,12 +516,20 @@ async def spotify_queue_next(payload: dict):
         return Response("Not linked", status_code=401)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=20) as client:
-        # Ensure device is the active one and resume if needed
+        # Stop current song to avoid overlap/context issues
+        try:
+            await client.put(
+                f"https://api.spotify.com/v1/me/player/pause?device_id={device_id}",
+                headers=headers,
+            )
+        except Exception:
+            pass
+        # Ensure device is the active one
         try:
             await client.put(
                 "https://api.spotify.com/v1/me/player",
                 headers=headers,
-                json={"device_ids": [device_id], "play": True},
+                json={"device_ids": [device_id], "play": False},
             )
         except Exception:
             pass
@@ -540,6 +548,23 @@ async def spotify_queue_next(payload: dict):
     if n.status_code >= 400:
         return Response(n.text, status_code=n.status_code)
     return {"ok": True}
+
+@app.post("/api/spotify/next")
+async def spotify_next(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    if not host_id:
+        return Response("Missing hostId", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://api.spotify.com/v1/me/player/next" + (f"?device_id={device_id}" if device_id else ""),
+            headers=headers,
+        )
+    return Response(r.text, status_code=r.status_code)
 
 @app.get("/api/spotify/state")
 async def spotify_state(hostId: str):
