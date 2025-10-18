@@ -123,11 +123,15 @@ async def ws_room(ws: WebSocket, code: str):
 
             elif event == "start":
                 # Solo host, estado lobby y al menos 2 jugadores
+                print(f"[start] room={code} hostId_in={data.get('hostId')} hostId_expected={room.hostId} state={room.state} players={len(room.players)}")
                 if data.get("hostId") != room.hostId:
+                    await broadcast(code, "game:error", {"message": "Only the host can start the game."})
                     continue
                 if room.state != "lobby":
+                    await broadcast(code, "game:error", {"message": "Game already started or finished."})
                     continue
                 if len(room.players) < 2:
+                    await broadcast(code, "game:error", {"message": "Need at least 2 players to start."})
                     continue
                 try:
                     # Load playlist deck (selected or default to 'Hitster')
