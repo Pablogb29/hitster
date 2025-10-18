@@ -18,6 +18,10 @@ export default function Host() {
   const [health, setHealth] = useState<string>("");
   const [spotifyLinked, setSpotifyLinked] = useState<boolean>(false);
   const [playlists, setPlaylists] = useState<any[]>([]);
+  const [selectedPl, setSelectedPl] = useState<string>("");
+  const [wins, setWins] = useState<Record<string, number>>({});
+  const [currentTurn, setCurrentTurn] = useState<string>("");
+  const [lastResult, setLastResult] = useState<any>(null);
   function resolveDefaultBackendBase() {
     if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
       return "https://backend-production-f463.up.railway.app";
@@ -43,13 +47,26 @@ export default function Host() {
       setQr(await QRCode.toDataURL(joinUrl));
 
       const conn = connectWS(r.code, (e) => {
-        if (e.event === "room:state" || e.event === "game:start") setRoom(e.data);
+        if (e.event === "room:state") setRoom(e.data);
+        if (e.event === "game:init") {
+          setRoom((prev:any)=> ({ ...(prev||{}), state: 'playing', players: e.data.players }));
+          setWins(e.data.wins || {});
+        }
         if (e.event === "turn:begin") {
+          setCurrentTurn(e.data.playerId);
           setRoom(prev => {
             if (!prev) return prev;
             const idx = prev.players.findIndex(p => p.id === e.data.playerId);
             return { ...prev, turnIndex: idx };
           });
+          setLastResult(null);
+        }
+        if (e.event === "turn:result") {
+          setWins(e.data.wins || {});
+          setLastResult(e.data);
+        }
+        if (e.event === "game:finished") {
+          setRoom(prev => prev ? { ...prev, state: 'finished' } : prev);
         }
       });
       setWs(conn);
@@ -119,7 +136,7 @@ export default function Host() {
 
   function startGame() {
     if (!ws || !room) return;
-    ws.send("start", { hostId });
+    ws.send("start", { hostId, playlistId: selectedPl });
   }
 
   useEffect(() => { /* crear sala manualmente con botón */ }, []);
@@ -162,19 +179,18 @@ export default function Host() {
                 )}
               </div>
               {spotifyLinked ? (
-                <div className="mt-2 text-sm">Linked. Your playlists:</div>
+                <div className="mt-2">
+                  <label className="text-sm">Select playlist</label>
+                  <select value={selectedPl} onChange={e=>setSelectedPl(e.target.value)} className="mt-1 w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2">
+                    <option value="">Hitster (default)</option>
+                    {playlists.map((p:any)=> (
+                      <option key={p.id} value={p.id}>{p.name} ({p.tracks?.total ?? 0})</option>
+                    ))}
+                  </select>
+                  <div className="text-xs opacity-70 mt-1">Only tracks with preview will be used.</div>
+                </div>
               ) : (
                 <div className="mt-2 text-xs opacity-75">Connect to list your playlists.</div>
-              )}
-              {spotifyLinked && (
-                <ul className="mt-2 space-y-1 max-h-48 overflow-auto">
-                  {playlists.map((p:any) => (
-                    <li key={p.id} className="flex items-center justify-between text-sm">
-                      <span className="truncate">{p.name}</span>
-                      <span className="opacity-60">{p.tracks?.total ?? 0} tracks</span>
-                    </li>
-                  ))}
-                </ul>
               )}
             </div>
 
@@ -193,10 +209,15 @@ export default function Host() {
               {room.players?.map(p => (
                 <li key={p.id} className="flex justify-between border border-zinc-700 rounded px-3 py-2">
                   <span>{p.name}{p.is_host ? " (host)" : ""}</span>
-                  <span>⭐ {p.score}</span>
+                  <span>🏆 {wins[p.id] ?? 0}{currentTurn===p.id ? ' • turn' : ''}</span>
                 </li>
               ))}
             </ul>
+            {lastResult && (
+              <div className="mt-3 px-3 py-2 bg-zinc-700/30 rounded text-sm">
+                Resultado: {lastResult.correct ? '✅ Correcto' : '❌ Incorrecto'} — {lastResult.song?.name} ({lastResult.song?.year}) · {lastResult.song?.artists}
+              </div>
+            )}
           </div>
         </div>
       )}

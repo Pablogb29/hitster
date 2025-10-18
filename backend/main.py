@@ -57,6 +57,14 @@ class Room(BaseModel):
     players: list[Player] = Field(default_factory=list)
     state: str = "lobby"      # lobby | playing | finished
     turnIndex: int = 0
+    # Game state
+    deck: list[dict] = Field(default_factory=list)  # list of SongCard dicts
+    used_track_ids: set[str] = Field(default_factory=set)
+    player_cards: dict[str, dict] = Field(default_factory=dict)  # playerId -> SongCard
+    wins: dict[str, int] = Field(default_factory=dict)  # playerId -> won cards count
+    current_song: dict | None = None  # current SongCard in play
+    selectedPlaylistId: str | None = None
+    selectedPlaylistName: str | None = None
 
 rooms: dict[str, Room] = {}
 clients: dict[str, list[WebSocket]] = {}
@@ -118,11 +126,116 @@ async def ws_room(ws: WebSocket, code: str):
                     continue
                 if len(room.players) < 2:
                     continue
+                # Load playlist deck (selected or default to 'Hitster')
+                pl_id = data.get("playlistId")
+                pl_name = data.get("playlistName") or (room.selectedPlaylistName or "Hitster")
+                deck = await _load_playlist(room.hostId, playlist_id=pl_id, name=pl_name)
+                if len(deck) < 2:
+                    await broadcast(code, "game:error", {"message": "Playlist not playable (need >=2 with preview)"})
+                    continue
+                room.deck = deck
+                room.used_track_ids = set()
+                room.player_cards = {}
+                room.wins = {}
+                room.selectedPlaylistId = pl_id
+                room.selectedPlaylistName = pl_name
+                # Give each non-host player an initial card
+                for p in room.players:
+                    if p.is_host:
+                        continue
+                    # draw a unique card for player
+                    card = None
+                    while deck and not card:
+                        c = deck.pop()
+                        if c["id"] not in room.used_track_ids:
+                            room.used_track_ids.add(c["id"])
+                            card = c
+                    if not card:
+                        continue
+                    room.player_cards[p.id] = card
+                    room.wins[p.id] = 0
+                # start game
                 room.state = "playing"
                 room.turnIndex = first_player_index(room)
-                await broadcast(code, "game:start", room.model_dump())
+                await broadcast(code, "game:init", {
+                    "players": [pl.model_dump() for pl in room.players],
+                    "playerCards": room.player_cards,
+                    "wins": room.wins,
+                    "remaining": len([c for c in deck if c["id"] not in room.used_track_ids]),
+                })
                 first_id = room.players[room.turnIndex].id
                 await broadcast(code, "turn:begin", {"playerId": first_id})
+
+            elif event == "turn:draw":
+                # Only current player can draw
+                pid = data.get("playerId")
+                if not room or room.state != "playing":
+                    continue
+                current_id = room.players[room.turnIndex].id
+                if pid != current_id:
+                    continue
+                # draw next unused card from remaining deck
+                card = None
+                # try up to len(deck) times
+                for _ in range(max(1, len(room.deck))):
+                    if not room.deck:
+                        break
+                    c = room.deck.pop()
+                    if c["id"] not in room.used_track_ids and c.get("preview_url"):
+                        card = c
+                        break
+                if not card:
+                    await broadcast(code, "game:finished", {"reason": "No more songs"})
+                    room.state = "finished"
+                    continue
+                room.current_song = card
+                room.used_track_ids.add(card["id"])
+                # Send play event (hide year initially)
+                payload = {k: v for k, v in card.items() if k != "year"}
+                await broadcast(code, "turn:play", {"playerId": pid, "song": payload})
+
+            elif event == "turn:guess":
+                # Validate and score
+                pid = data.get("playerId")
+                choice = (data.get("choice") or "").lower()  # 'before' | 'after'
+                if not room or room.state != "playing" or not room.current_song:
+                    continue
+                current_id = room.players[room.turnIndex].id
+                if pid != current_id:
+                    continue
+                ref = room.player_cards.get(pid)
+                song = room.current_song
+                correct = False
+                if ref and song:
+                    if choice == "before":
+                        correct = song["year"] < ref["year"]
+                    elif choice == "after":
+                        correct = song["year"] > ref["year"]
+                if correct:
+                    room.wins[pid] = int(room.wins.get(pid, 0)) + 1
+                # Reveal result
+                await broadcast(code, "turn:result", {
+                    "playerId": pid,
+                    "correct": correct,
+                    "song": song,
+                    "wins": room.wins,
+                })
+                # Check win condition
+                if room.wins.get(pid, 0) >= 10:
+                    room.state = "finished"
+                    await broadcast(code, "game:finished", {"winner": pid})
+                    continue
+                # advance turn
+                room.current_song = None
+                room.turnIndex = (room.turnIndex + 1) % len(room.players)
+                # ensure next turn is a non-host player
+                # loop safeguard
+                for _ in range(len(room.players)):
+                    if not room.players[room.turnIndex].is_host:
+                        break
+                    room.turnIndex = (room.turnIndex + 1) % len(room.players)
+                next_id = room.players[room.turnIndex].id
+                await broadcast(code, "turn:begin", {"playerId": next_id})
 
     except WebSocketDisconnect:
         if code in clients and ws in clients[code]:
@@ -219,6 +332,66 @@ async def _get_valid_token(host_id: str) -> str | None:
         await _refresh_token(host_id)
         info = spotify_tokens.get(host_id)
     return info.get("access_token") if info else None
+
+def _map_track_to_card(item: dict) -> dict | None:
+    try:
+        t = item.get("track") or item
+        if not t:
+            return None
+        name = t.get("name")
+        artists = ", ".join([a.get("name") for a in t.get("artists", []) if a.get("name")])
+        album = t.get("album", {})
+        rd = (album.get("release_date") or "").strip()
+        year = int(rd.split("-")[0]) if rd else None
+        preview = t.get("preview_url")
+        track_id = t.get("id") or t.get("uri") or t.get("href")
+        if not (name and artists and year and track_id):
+            return None
+        return {"id": track_id, "name": name, "artists": artists, "year": year, "preview_url": preview}
+    except:
+        return None
+
+async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str | None = None, min_tracks: int = 30) -> list[dict]:
+    token = await _get_valid_token(host_id)
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        target_playlist = None
+        if playlist_id:
+            # Fetch specific playlist
+            pr = await client.get(f"https://api.spotify.com/v1/playlists/{playlist_id}", headers=headers)
+            if pr.status_code >= 400:
+                return []
+            target_playlist = pr.json()
+        else:
+            # Find by name (default to "Hitster")
+            search_name = (name or "Hitster").strip().lower()
+            r = await client.get("https://api.spotify.com/v1/me/playlists", headers=headers, params={"limit": 50})
+            r.raise_for_status()
+            pls = r.json().get("items", [])
+            target_playlist = next((p for p in pls if (p.get("name") or "").strip().lower() == search_name), None)
+            if not target_playlist:
+                return []
+        # Pull tracks pages
+        tracks: list[dict] = []
+        href = target_playlist.get("tracks", {}).get("href")
+        next_url = href
+        while next_url and len(tracks) < 500:
+            tr = await client.get(next_url, headers=headers)
+            tr.raise_for_status()
+            data = tr.json()
+            tracks.extend(data.get("items", []))
+            next_url = data.get("next")
+    cards = []
+    for it in tracks:
+        c = _map_track_to_card(it)
+        if c:
+            cards.append(c)
+    random.shuffle(cards)
+    # Only allow tracks with preview to satisfy "skip track without preview"
+    with_preview = [c for c in cards if c.get("preview_url")]
+    return with_preview
 
 @app.get("/api/spotify/login")
 def spotify_login(hostId: str):
