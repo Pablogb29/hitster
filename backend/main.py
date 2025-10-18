@@ -1,7 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import random, string, json, os, re
+import random, string, json, os, re, time
+from urllib.parse import urlencode
+import httpx
 
 app = FastAPI()
 
@@ -136,3 +138,125 @@ async def broadcast(code: str, event: str, data: dict):
     for sock in dead:
         if sock in clients.get(code, []):
             clients[code].remove(sock)
+
+# -------------------------------
+# Spotify OAuth + Playlists
+# -------------------------------
+
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+# If not set, will try to infer from first allowed origin by swapping host to backend
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")  # e.g., https://backend..up.railway.app/api/spotify/callback
+SPOTIFY_SCOPES = "playlist-read-private playlist-read-collaborative"
+
+# state -> hostId (short-lived)
+spotify_states: dict[str, dict] = {}
+# hostId -> token info
+spotify_tokens: dict[str, dict] = {}
+
+def _now() -> int:
+    return int(time.time())
+
+def _infer_redirect_uri() -> str | None:
+    # Fallback only if explicit env not provided
+    return SPOTIFY_REDIRECT_URI
+
+def _build_auth_url(state: str) -> str:
+    redirect_uri = _infer_redirect_uri()
+    q = {
+        "response_type": "code",
+        "client_id": SPOTIFY_CLIENT_ID,
+        "scope": SPOTIFY_SCOPES,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "show_dialog": "false",
+    }
+    return f"https://accounts.spotify.com/authorize?{urlencode(q)}"
+
+async def _exchange_code_for_token(code: str) -> dict:
+    redirect_uri = _infer_redirect_uri()
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": SPOTIFY_CLIENT_ID,
+        "client_secret": SPOTIFY_CLIENT_SECRET,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post("https://accounts.spotify.com/api/token", data=data)
+    r.raise_for_status()
+    token = r.json()
+    # compute expiry
+    token["expires_at"] = _now() + int(token.get("expires_in", 3600)) - 30
+    return token
+
+async def _refresh_token(host_id: str) -> dict | None:
+    info = spotify_tokens.get(host_id)
+    if not info or not info.get("refresh_token"):
+        return None
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": info["refresh_token"],
+        "client_id": SPOTIFY_CLIENT_ID,
+        "client_secret": SPOTIFY_CLIENT_SECRET,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post("https://accounts.spotify.com/api/token", data=data)
+    r.raise_for_status()
+    t = r.json()
+    info["access_token"] = t["access_token"]
+    if "refresh_token" in t:  # sometimes not returned
+        info["refresh_token"] = t["refresh_token"]
+    info["expires_at"] = _now() + int(t.get("expires_in", 3600)) - 30
+    spotify_tokens[host_id] = info
+    return info
+
+async def _get_valid_token(host_id: str) -> str | None:
+    info = spotify_tokens.get(host_id)
+    if not info:
+        return None
+    if _now() >= int(info.get("expires_at", 0)):
+        await _refresh_token(host_id)
+        info = spotify_tokens.get(host_id)
+    return info.get("access_token") if info else None
+
+@app.get("/api/spotify/login")
+def spotify_login(hostId: str):
+    if not SPOTIFY_CLIENT_ID or not _infer_redirect_uri():
+        return {"error": "Spotify not configured on server"}
+    state = code4() + code4()
+    spotify_states[state] = {"hostId": hostId, "ts": _now()}
+    return {"authorize_url": _build_auth_url(state), "state": state}
+
+@app.get("/api/spotify/callback")
+async def spotify_callback(code: str | None = None, state: str | None = None):
+    if not code or not state or state not in spotify_states:
+        return Response("Invalid state", status_code=400)
+    host_id = spotify_states[state]["hostId"]
+    # cleanup state
+    spotify_states.pop(state, None)
+    try:
+        token = await _exchange_code_for_token(code)
+        spotify_tokens[host_id] = token
+    except httpx.HTTPError as e:
+        return Response(f"Token exchange failed: {e}", status_code=400)
+    # Redirect user back to frontend host page (best-effort)
+    # Try to use first allowed origin
+    frontend = allow_origins[0] if allow_origins else "http://localhost:5173"
+    loc = f"{frontend}/host?spotify=ok"
+    return Response(status_code=302, headers={"Location": loc})
+
+@app.get("/api/spotify/status")
+def spotify_status(hostId: str):
+    return {"linked": hostId in spotify_tokens}
+
+@app.get("/api/spotify/playlists")
+async def spotify_playlists(hostId: str, limit: int = 20):
+    token = await _get_valid_token(hostId)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"limit": min(max(limit, 1), 50)}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get("https://api.spotify.com/v1/me/playlists", headers=headers, params=params)
+    return r.json()

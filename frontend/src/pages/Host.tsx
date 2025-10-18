@@ -16,6 +16,8 @@ export default function Host() {
   const [ws, setWs] = useState<any>(null);
   const [hostId, setHostId] = useState<string>("");
   const [health, setHealth] = useState<string>("");
+  const [spotifyLinked, setSpotifyLinked] = useState<boolean>(false);
+  const [playlists, setPlaylists] = useState<any[]>([]);
   function resolveDefaultBackendBase() {
     if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
       return "https://backend-production-f463.up.railway.app";
@@ -51,6 +53,15 @@ export default function Host() {
       setWs(conn);
       // Backend expects snake_case field name `is_host`
       conn.send("join", { id: r.hostId, name: "HOST", is_host: true });
+      // check spotify status in case user just linked
+      try {
+        const st = await fetch(`${API_BASE}/api/spotify/status?hostId=${r.hostId}`).then(r=>r.json());
+        setSpotifyLinked(!!st?.linked);
+        if (st?.linked) {
+          const pls = await fetch(`${API_BASE}/api/spotify/playlists?hostId=${r.hostId}`).then(r=>r.json());
+          setPlaylists(pls?.items || []);
+        }
+      } catch {}
     } catch (err) {
       console.error("Failed to create room:", err);
       alert("Failed to create room. Check BACKEND URL configuration.");
@@ -67,6 +78,18 @@ export default function Host() {
       console.error("Health check failed", e);
       setHealth(`error: ${e?.message || e}`);
     }
+  }
+
+  function connectSpotify() {
+    if (!hostId) return;
+    // Step 1: ask backend for authorize URL (so we keep client_secret safe)
+    fetch(`${API_BASE}/api/spotify/login?hostId=${hostId}`).then(r=>r.json()).then(data => {
+      if (data?.authorize_url) {
+        window.location.href = data.authorize_url as string;
+      } else {
+        alert("Spotify is not configured on backend.");
+      }
+    }).catch(() => alert("Failed to start Spotify login."));
   }
 
   function startGame() {
@@ -105,6 +128,30 @@ export default function Host() {
             >
               Start Game
             </button>
+
+            <div className="mt-4 border-t border-zinc-700 pt-3">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold">Spotify</div>
+                {!spotifyLinked && (
+                  <button onClick={connectSpotify} className="px-3 py-1 text-xs bg-emerald-600 rounded">Connect</button>
+                )}
+              </div>
+              {spotifyLinked ? (
+                <div className="mt-2 text-sm">Linked. Your playlists:</div>
+              ) : (
+                <div className="mt-2 text-xs opacity-75">Connect to list your playlists.</div>
+              )}
+              {spotifyLinked && (
+                <ul className="mt-2 space-y-1 max-h-48 overflow-auto">
+                  {playlists.map((p:any) => (
+                    <li key={p.id} className="flex items-center justify-between text-sm">
+                      <span className="truncate">{p.name}</span>
+                      <span className="opacity-60">{p.tracks?.total ?? 0} tracks</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             {room?.state === "playing" && room?.turnIndex !== undefined && (
               <div className="mt-3 px-3 py-2 bg-emerald-700/40 rounded">
