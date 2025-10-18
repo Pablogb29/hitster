@@ -59,20 +59,36 @@ export default function Join() {
             // Trigger playback via Web Playback SDK (host's token)
             const uri = data.song?.uri;
             if (deviceId && uri && hostId) {
-              fetch(`${API_BASE}/api/spotify/play`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostId, device_id: deviceId, uri })
-              }).then(async (r)=>{
-                if (!r.ok) {
-                  const t = await r.text().catch(()=>"(no body)");
-                  setStatus(prev=>`play ${r.status}: ${t} • `+prev);
-                } else {
-                  setStatus(prev=>`play OK • `+prev);
-                }
-              }).catch((err)=>{
-                setStatus(prev=>`play fetch err: ${err?.message||err} • `+prev);
+              // Try transfer + play with a light retry if not yet active
+              fetch(`${API_BASE}/api/spotify/transfer`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hostId, device_id: deviceId, play: true })
+              }).catch(()=>{}).finally(() => {
+                fetch(`${API_BASE}/api/spotify/play`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ hostId, device_id: deviceId, uri })
+                }).then(async (r)=>{
+                  if (!r.ok) {
+                    const t = await r.text().catch(()=>"(no body)");
+                    setStatus(prev=>`play ${r.status}: ${t} • `+prev);
+                  } else {
+                    setStatus(prev=>`play OK • `+prev);
+                  }
+                }).catch((err)=>{
+                  setStatus(prev=>`play fetch err: ${err?.message||err} • `+prev);
+                });
               });
+              // After 700ms, check state; if still not playing, retry play once
+              setTimeout(async () => {
+                try {
+                  const s = await fetch(`${API_BASE}/api/spotify/state?hostId=${hostId}`).then(r=>r.json());
+                  if (!s?.is_playing) {
+                    await fetch(`${API_BASE}/api/spotify/play`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId, uri }) });
+                    setStatus(prev=>`retry play • `+prev);
+                  }
+                } catch {}
+              }, 700);
             }
           } else {
             setCurrentSong(null);
@@ -255,11 +271,7 @@ export default function Join() {
                 </>
               ) : (
                 <div>
-                  {currentSong.preview_url ? (
-                    <audio src={currentSong.preview_url} autoPlay controls className="w-full"/>
-                  ) : (
-                    <div className="text-xs opacity-70">Sin preview disponible</div>
-                  )}
+                  <div className="text-xs opacity-70">Reproduciendo vía Spotify: {currentSong?.name} — {currentSong?.artists}</div>
                   <div className="mt-3 flex gap-2">
                     <button onClick={()=>guess("before")} className="px-3 py-2 bg-blue-600 rounded">Antes</button>
                     <button onClick={()=>guess("after")} className="px-3 py-2 bg-purple-600 rounded">Después</button>

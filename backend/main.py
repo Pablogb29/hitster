@@ -501,6 +501,34 @@ async def spotify_pause(payload: dict):
         )
     return Response(r.text, status_code=r.status_code)
 
+@app.get("/api/spotify/state")
+async def spotify_state(hostId: str):
+    token = await _get_valid_token(hostId)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get("https://api.spotify.com/v1/me/player", headers=headers)
+    return Response(r.text, status_code=r.status_code, media_type="application/json")
+
+@app.post("/api/spotify/volume")
+async def spotify_volume(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    volume = int(payload.get("volume", 80))
+    if not host_id:
+        return Response("Missing hostId", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.put(
+            f"https://api.spotify.com/v1/me/player/volume?volume_percent={max(0,min(100,volume))}" + (f"&device_id={device_id}" if device_id else ""),
+            headers=headers,
+        )
+    return Response(r.text, status_code=r.status_code)
+
 @app.get("/api/spotify/login")
 def spotify_login(hostId: str):
     if not SPOTIFY_CLIENT_ID or not _infer_redirect_uri():
