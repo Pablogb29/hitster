@@ -469,7 +469,7 @@ async def spotify_play(payload: dict):
 async def spotify_transfer(payload: dict):
     host_id = payload.get("hostId")
     device_id = payload.get("device_id")
-    play = bool(payload.get("play", True))
+    play = bool(payload.get("play", False))
     if not host_id or not device_id:
         return Response("Missing params", status_code=400)
     token = await _get_valid_token(host_id)
@@ -481,6 +481,23 @@ async def spotify_transfer(payload: dict):
             "https://api.spotify.com/v1/me/player",
             headers=headers,
             json={"device_ids": [device_id], "play": play},
+        )
+    return Response(r.text, status_code=r.status_code)
+
+@app.post("/api/spotify/pause")
+async def spotify_pause(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    if not host_id:
+        return Response("Missing hostId", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.put(
+            f"https://api.spotify.com/v1/me/player/pause" + (f"?device_id={device_id}" if device_id else ""),
+            headers=headers,
         )
     return Response(r.text, status_code=r.status_code)
 

@@ -82,6 +82,12 @@ export default function Join() {
           const data = e.data || {};
           setWins(data.wins || {});
           setCurrentSong(data.song || null);
+          // Ensure playback is stopped when result is shown
+          try {
+            if (hostId) {
+              await fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })});
+            }
+          } catch {}
         }
         else if (e.event === "game:finished") {
           const data = e.data || {};
@@ -133,7 +139,7 @@ export default function Join() {
             const r = await fetch(`${API_BASE}/api/spotify/transfer`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ hostId, device_id: device_id, play: true })
+              body: JSON.stringify({ hostId, device_id: device_id, play: false })
             });
             setStatus(prev => `transfer ${r.status} • ` + prev);
           } catch {}
@@ -192,8 +198,13 @@ export default function Join() {
     }
   }
 
-  const guess = (choice: "before" | "after") => {
+  const guess = async (choice: "before" | "after") => {
     if (!connRef.current) return;
+    try {
+      if (hostId) {
+        await fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })});
+      }
+    } catch {}
     connRef.current.send("turn:guess", { playerId, choice });
   };
 
