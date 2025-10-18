@@ -8,11 +8,11 @@ export default function Join() {
   const [code, setCode] = useState(codeParam);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
-  const [conn, setConn] = useState<any>(null);
+  const [, setConn] = useState<any>(null);
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
 
   const join = () => {
-    const ws = connectWS(code, (e) => {
+    const ws = connectWS(code, () => {
       // puedes manejar room:state aquí si quieres ver info
     });
     ws.send("join", { id: playerId, name, isHost: false });
