@@ -88,6 +88,44 @@ export default function Join() {
     setStatus("joined");
   };
 
+  // Load Spotify Web Playback SDK and init Player (must not be behind conditional returns)
+  useEffect(() => {
+    const init = async () => {
+      if (!joined) return;
+      const existing = document.getElementById('spotify-sdk');
+      if (!existing) {
+        const s = document.createElement('script');
+        s.id = 'spotify-sdk';
+        s.src = 'https://sdk.scdn.co/spotify-player.js';
+        s.async = true;
+        document.body.appendChild(s);
+      }
+      (window as any).onSpotifyWebPlaybackSDKReady = () => {
+        const player = new (window as any).Spotify.Player({
+          name: 'HITSTER Player',
+          getOAuthToken: async (cb: any) => {
+            try {
+              const r = await fetch(`${API_BASE}/api/spotify/token?hostId=${hostId}`);
+              if (!r.ok) return;
+              const data = await r.json();
+              cb(data.access_token);
+            } catch {}
+          },
+          volume: 0.8,
+        });
+        player.addListener('ready', ({ device_id }: any) => {
+          setDeviceId(device_id);
+          setPlayerReady(true);
+        });
+        player.addListener('not_ready', () => {
+          setPlayerReady(false);
+        });
+        player.connect();
+      };
+    };
+    init();
+  }, [joined, hostId]);
+
   if (!joined)
     return (
       <div className="min-h-screen bg-zinc-900 text-white p-6">
@@ -111,40 +149,7 @@ export default function Join() {
     connRef.current.send("turn:guess", { playerId, choice });
   };
 
-  // Load Spotify Web Playback SDK and init Player
-  useEffect(() => {
-    if (!joined) return;
-    const existing = document.getElementById('spotify-sdk');
-    if (!existing) {
-      const s = document.createElement('script');
-      s.id = 'spotify-sdk';
-      s.src = 'https://sdk.scdn.co/spotify-player.js';
-      s.async = true;
-      document.body.appendChild(s);
-    }
-    (window as any).onSpotifyWebPlaybackSDKReady = () => {
-      const player = new (window as any).Spotify.Player({
-        name: 'HITSTER Player',
-        getOAuthToken: async (cb: any) => {
-          try {
-            const r = await fetch(`${API_BASE}/api/spotify/token?hostId=${hostId}`);
-            if (!r.ok) return;
-            const data = await r.json();
-            cb(data.access_token);
-          } catch {}
-        },
-        volume: 0.8,
-      });
-      player.addListener('ready', ({ device_id }: any) => {
-        setDeviceId(device_id);
-        setPlayerReady(true);
-      });
-      player.addListener('not_ready', () => {
-        setPlayerReady(false);
-      });
-      player.connect();
-    };
-  }, [joined, hostId]);
+  
 
   if (safeMode && joined) {
     return (
