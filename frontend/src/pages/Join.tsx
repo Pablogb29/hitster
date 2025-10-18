@@ -27,38 +27,49 @@ export default function Join() {
   const join = () => {
     setStatus("connecting ws...");
     const ws = connectWS(code, (e) => {
-      setStatus(`event: ${e.event}`);
-      if (e.event === "room:state") { setRoom(e.data); setHostId(e.data.hostId); }
-      if (e.event === "game:init") {
-        setRoom({ code, players: e.data.players, state: "playing" });
-        setPlayerCard(e.data.playerCards[playerId]);
-        setWins(e.data.wins || {});
-      }
-      if (e.event === "turn:begin") {
-        setMyTurn(e.data.playerId === playerId);
-        setCurrentSong(null);
-      }
-      if (e.event === "turn:play") {
-        if (e.data.playerId === playerId) {
-          setCurrentSong(e.data.song);
-          // Trigger playback via Web Playback SDK (host's token)
-          if (deviceId && e.data.song?.uri) {
-            fetch(`${API_BASE}/api/spotify/play`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ hostId, device_id: deviceId, uri: e.data.song.uri })
-            }).catch(()=>{});
-          }
-        } else {
+      try {
+        setStatus(`event: ${e.event}`);
+        if (e.event === "room:state") { setRoom(e.data); setHostId(e.data?.hostId || ""); }
+        else if (e.event === "game:init") {
+          const data = e.data || {};
+          setRoom({ code, players: data.players || [], state: "playing" });
+          setPlayerCard((data.playerCards || {})[playerId] || null);
+          setWins(data.wins || {});
+        }
+        else if (e.event === "turn:begin") {
+          const data = e.data || {};
+          setMyTurn(data.playerId === playerId);
           setCurrentSong(null);
         }
-      }
-      if (e.event === "turn:result") {
-        setWins(e.data.wins || {});
-        setCurrentSong(e.data.song); // revealed, show details if desired
-      }
-      if (e.event === "game:finished") {
-        alert(e.data.winner ? `Winner: ${e.data.winner}` : (e.data.reason || "Game finished"));
+        else if (e.event === "turn:play") {
+          const data = e.data || {};
+          if (data.playerId === playerId) {
+            setCurrentSong(data.song || null);
+            // Trigger playback via Web Playback SDK (host's token)
+            const uri = data.song?.uri;
+            if (deviceId && uri && hostId) {
+              fetch(`${API_BASE}/api/spotify/play`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hostId, device_id: deviceId, uri })
+              }).catch(()=>{});
+            }
+          } else {
+            setCurrentSong(null);
+          }
+        }
+        else if (e.event === "turn:result") {
+          const data = e.data || {};
+          setWins(data.wins || {});
+          setCurrentSong(data.song || null);
+        }
+        else if (e.event === "game:finished") {
+          const data = e.data || {};
+          alert(data.winner ? `Winner: ${data.winner}` : (data.reason || "Game finished"));
+        }
+      } catch (err: any) {
+        console.error('WS handler error', err);
+        setStatus(`handler error: ${err?.message || err}`);
       }
     });
     ws.send("join", { id: playerId, name, is_host: false });
