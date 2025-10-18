@@ -30,17 +30,17 @@ export default function Host() {
 
   async function createRoom() {
     try {
-      const url = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}`
-                         : `${API_BASE}/api/create-room`;
-      const res = await fetch(url, { mode: 'cors' as RequestMode });
+      const reqUrl = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}`
+                            : `${API_BASE}/api/create-room`;
+      const res = await fetch(reqUrl, { mode: 'cors' as RequestMode });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
       const r = await res.json();
       setRoom({ code: r.code, players: [], state: "lobby", turnIndex: 0 });
       setHostId(r.hostId);
-      const url = `${location.origin}/join?code=${r.code}`;
-      setQr(await QRCode.toDataURL(url));
+      const joinUrl = `${location.origin}/join?code=${r.code}`;
+      setQr(await QRCode.toDataURL(joinUrl));
 
       const conn = connectWS(r.code, (e) => {
         if (e.event === "room:state" || e.event === "game:start") setRoom(e.data);
