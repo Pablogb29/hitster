@@ -195,7 +195,7 @@ export default function Host() {
                       <option key={p.id} value={p.id}>{p.name} ({p.tracks?.total ?? 0})</option>
                     ))}
                   </select>
-                  <div className="text-xs opacity-70 mt-1">Only tracks with preview will be used.</div>
+                  <div className="text-xs opacity-70 mt-1">Full-track playback via Spotify Web Playback SDK.</div>
                 </div>
               ) : (
                 <div className="mt-2 text-xs opacity-75">Connect to list your playlists.</div>

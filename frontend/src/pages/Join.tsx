@@ -17,6 +17,7 @@ export default function Join() {
   const [hostId, setHostId] = useState<string>("");
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
+  const [status, setStatus] = useState<string>("idle");
 
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + '//' + location.host))
     .replace(/\/+$/, '')
@@ -24,7 +25,9 @@ export default function Join() {
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
 
   const join = () => {
+    setStatus("connecting ws...");
     const ws = connectWS(code, (e) => {
+      setStatus(`event: ${e.event}`);
       if (e.event === "room:state") { setRoom(e.data); setHostId(e.data.hostId); }
       if (e.event === "game:init") {
         setRoom({ code, players: e.data.players, state: "playing" });
@@ -61,6 +64,7 @@ export default function Join() {
     ws.send("join", { id: playerId, name, is_host: false });
     connRef.current = ws;
     setJoined(true);
+    setStatus("joined");
   };
 
   if (!joined)
@@ -124,6 +128,7 @@ export default function Join() {
   return (
     <div className="min-h-screen bg-zinc-900 text-white p-6">
       <h2 className="text-xl font-semibold">Sala {code}</h2>
+      <div className="mt-1 text-xs opacity-70">Estado: {status} • hostId: {hostId || 'n/a'} • device: {deviceId || 'n/a'}</div>
       <div className="mt-2">Jugador: <span className="font-semibold">{name}</span></div>
       <div className="mt-4 grid md:grid-cols-2 gap-6">
         <div className="p-4 bg-zinc-800 rounded">
