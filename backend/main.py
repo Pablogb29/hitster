@@ -223,6 +223,18 @@ def _get_player(room: Room, player_id: str) -> Optional[Player]:
             return p
     return None
 
+def _cleanup_host_entries(room: Room):
+    # Filter out any HOST entries from the player list
+    # HOST should never be a player, only a spectator
+    filtered = [
+        p for p in room.players
+        if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"
+    ]
+      if len(filtered) != len(room.players):
+        removed = len(room.players) - len(filtered)
+        logger.info(f"[cleanup] removed {removed} host placeholders from room={room.code}")
+    room.players = filtered
+
 def _find_room_for_turn(host_id: str, turn_id: str | None) -> Optional[tuple[str, Room]]:
     if not turn_id:
         return None
@@ -257,6 +269,8 @@ def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str)
     return (lo, (left, right))
 
 def _deal_opening_cards(code: str, room: Room):
+    # Ensure HOST is not in players list
+    _cleanup_host_entries(room)
     if not room.players:
         raise ValueError("No players to deal")
     if any(p.timeline for p in room.players):
@@ -276,6 +290,8 @@ def _deal_opening_cards(code: str, room: Room):
     logger.info(f"[deal] room={code} players={len(room.players)} dealt_ids={dealt_ids}")
 
 async def _begin_turn(code: str, room: Room):
+    # Ensure HOST is not in players list
+    _cleanup_host_entries(room)
     if room.status == "finished" or not room.players:
         return
     if room.turnIndex >= len(room.players):
@@ -310,7 +326,13 @@ async def _begin_turn(code: str, room: Room):
 async def _advance_turn(code: str, room: Room):
     if room.status == "finished":
         return
-    room.turnIndex = (room.turnIndex + 1) % len(room.players) if room.players else 0
+    # Ensure HOST is not in players list before advancing turn
+    _cleanup_host_entries(room)
+    if not room.players:
+        room.status = "finished"
+        await broadcast(code, "game:finish", {"winnerId": room.winnerId})
+        return
+    room.turnIndex = (room.turnIndex + 1) % len(room.players)
     room.turn = None
     room.status = "playing"
     await _begin_turn(code, room)
@@ -384,13 +406,18 @@ async def ws_room(ws: WebSocket, code: str):
 
             if event == "join":
                 p = Player(**data)
-                # asigna asiento libre
+                p.is_host = bool(data.get("is_host", False))
+                if p.is_host or p.id == room.hostId or p.id.upper() == "HOST":
+                    _cleanup_host_entries(room)
+                    await _broadcast_room_snapshot(code, room)
+                    continue
                 used = {pl.seat for pl in room.players}
                 seat = 0
                 while seat in used:
                     seat += 1
                 p.seat = seat
                 room.players.append(p)
+                _cleanup_host_entries(room)
                 await _broadcast_room_snapshot(code, room)
 
             elif event == "start":
@@ -402,6 +429,8 @@ async def ws_room(ws: WebSocket, code: str):
                 if room.status != "lobby":
                     await broadcast(code, "game:error", {"message": "Game already started or finished."})
                     continue
+                # Ensure HOST is not in players list before starting game
+                _cleanup_host_entries(room)
                 if len(room.players) < 2:
                     await broadcast(code, "game:error", {"message": "Need at least 2 players to start."})
                     continue
@@ -427,8 +456,7 @@ async def ws_room(ws: WebSocket, code: str):
                 for p in room.players:
                     p.timeline = []
                     p.score = 0
-                non_host_indices = [i for i, pl in enumerate(room.players) if not pl.is_host]
-                room.turnIndex = non_host_indices[0] if non_host_indices else 0
+                room.turnIndex = 0
                 room.turn = None
                 room.status = "setup"
                 room.winnerId = None

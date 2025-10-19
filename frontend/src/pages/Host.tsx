@@ -1,500 +1,390 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
-import QRCode from "qrcode";
+import { useCallback, useEffect, useState } from "react";
 import { connectWS, type WSEvent } from "../lib/ws";
 import Tabletop from "../tabletop/Tabletop";
-import type { HiddenCardState, TabletopPlayer, TabletopRoom } from "../tabletop/types";
+import { useSearchParams } from "react-router-dom";
 
-type RoomSnapshot = TabletopRoom & {
-  deck?: (TabletopRoom["deck"] & {
+type Player = {
+  id: string;
+  name: string;
+  score: number;
+  timeline: any[];
+  seat?: number;
+  is_host?: boolean;
+};
+
+type Room = {
+  code: string;
+  hostId: string;
+  status: "lobby" | "playing" | "placing" | "result" | "finished" | "setup";
+  tiePolicy: "strict" | "lenient";
+  winnerId: string | null;
+  turnIndex: number;
+  turn: {
+    turnId: string;
+    currentPlayerId: string;
+    phase: "playing" | "placing" | "result";
+    drawn: any | null;
+  } | null;
+  deck: {
+    playlistId: string | null;
+    used: string[];
     discard: string[];
-  }) | undefined;
+    remaining: number;
+  };
+  players: Player[];
 };
 
-type HostState = {
-  room: RoomSnapshot | null;
-  status: string;
-  wsStatus: "idle" | "connecting" | "open" | "closed";
-};
-
-type HostAction =
-  | { type: "ROOM_INIT"; payload: RoomSnapshot }
-  | { type: "TURN_BEGIN"; payload: { turnId: string; currentPlayerId: string } }
-  | { type: "TURN_PLAY"; payload: { turnId: string; playerId: string; song: { trackId: string; uri: string; release: { date: string; precision: string } } } }
-  | { type: "TURN_PLACING"; payload: { turnId: string } }
-  | { type: "TURN_RESULT"; payload: { turnId: string; playerId: string; correct: boolean; placedTrack?: any; finalIndex?: number; newScore?: number } }
-  | { type: "GAME_FINISH"; payload: { winnerId: string } }
-  | { type: "SET_STATUS"; payload: string }
-  | { type: "WS_STATUS"; payload: HostState["wsStatus"] };
-
-const initialHostState: HostState = {
-  room: null,
-  status: "",
-  wsStatus: "idle",
-};
-
-const normalizeTrack = (track: any) => ({
-  trackId: track?.trackId ?? track?.id,
-  uri: track?.uri,
-  name: track?.name,
-  artist: track?.artist,
-  album: track?.album,
-  coverUrl: track?.coverUrl,
-  release: track?.release,
-});
-
-const normalizePlayer = (p: any): TabletopPlayer => ({
-  id: p.id,
-  name: p.name,
-  score: p.score ?? (p.timeline?.length ?? 0),
-  timeline: (p.timeline ?? []).map((card: any) => normalizeTrack(card)),
-});
-
-const normalizeRoom = (snapshot: RoomSnapshot): RoomSnapshot => {
-  const discard = [...(snapshot.deck?.discard ?? [])].filter((id): id is string => Boolean(id));
-  return {
-    ...snapshot,
-    players: snapshot.players.map(normalizePlayer),
-    turn: snapshot.turn
-      ? {
-          turnId: snapshot.turn.turnId,
-          currentPlayerId: snapshot.turn.currentPlayerId,
-          phase: snapshot.turn.phase,
-          drawn: snapshot.turn.drawn ? (normalizeTrack(snapshot.turn.drawn) as any) : null,
-        }
-      : null,
-    deck: {
-      playlistId: snapshot.deck?.playlistId ?? null,
-      used: [...(snapshot.deck?.used ?? [])],
-      discard,
-      remaining: snapshot.deck?.remaining ?? 0,
-    },
+type HiddenCardState = {
+  playerId: string;
+  trackId: string;
+  uri: string;
+  release: {
+    date: string;
+    precision: "year" | "month" | "day";
   };
 };
 
-const hostReducer = (state: HostState, action: HostAction): HostState => {
-  switch (action.type) {
-    case "ROOM_INIT":
-      return {
-        ...state,
-        room: normalizeRoom(action.payload),
-        status: "Room synchronised",
-      };
-    case "TURN_BEGIN": {
-      if (!state.room) return state;
-      const room: RoomSnapshot = {
-        ...state.room,
-        status: "playing",
-        turn: {
-          turnId: action.payload.turnId,
-          currentPlayerId: action.payload.currentPlayerId,
-          phase: "playing",
-          drawn: null,
-        },
-      };
-      return { ...state, room, status: `Turn started for ${action.payload.currentPlayerId}` };
-    }
-    case "TURN_PLAY": {
-      if (!state.room || !state.room.turn) return state;
-      if (state.room.turn.turnId !== action.payload.turnId) return state;
-      const room: RoomSnapshot = {
-        ...state.room,
-        status: "placing",
-        turn: {
-          ...state.room.turn,
-          phase: "placing",
-          drawn: normalizeTrack(action.payload.song) as any,
-        },
-      };
-      return { ...state, room };
-    }
-    case "TURN_PLACING": {
-      if (!state.room || !state.room.turn || state.room.turn.turnId !== action.payload.turnId) return state;
-      const room: RoomSnapshot = {
-        ...state.room,
-        status: "placing",
-        turn: { ...state.room.turn, phase: "placing" },
-      };
-      return { ...state, room };
-    }
-    case "TURN_RESULT": {
-      if (!state.room || !state.room.turn || state.room.turn.turnId !== action.payload.turnId) return state;
-      const players = state.room.players.map((player) => {
-        if (player.id !== action.payload.playerId) return player;
-        if (action.payload.correct && action.payload.placedTrack && typeof action.payload.finalIndex === "number") {
-          const timeline = [...player.timeline];
-          const index = Math.max(0, Math.min(action.payload.finalIndex, timeline.length));
-          timeline.splice(index, 0, normalizeTrack(action.payload.placedTrack));
-          return {
-            ...player,
-            score: action.payload.newScore ?? timeline.length,
-            timeline,
-          };
-        }
-        return {
-          ...player,
-          score: action.payload.newScore ?? player.score,
-        };
-      });
-      const drawnTrackId = state.room.turn.drawn?.trackId;
-      const baseDiscard = [...(state.room.deck?.discard ?? [])];
-      const discard = action.payload.correct
-        ? baseDiscard
-        : [...baseDiscard, drawnTrackId].filter((id): id is string => typeof id === "string" && id.length > 0);
-      const room: RoomSnapshot = {
-        ...state.room,
-        status: "result",
-        players,
-        deck: { ...state.room.deck!, discard },
-        turn: {
-          ...state.room.turn,
-          phase: "result",
-          drawn: null,
-        },
-      };
-      return {
-        ...state,
-        room,
-        status: action.payload.correct ? "Correct placement" : "Incorrect placement",
-      };
-    }
-    case "GAME_FINISH": {
-      if (!state.room) return state;
-      const room: RoomSnapshot = {
-        ...state.room,
-        status: "finished",
-        winnerId: action.payload.winnerId,
-      };
-      return { ...state, room, status: `Winner: ${action.payload.winnerId}` };
-    }
-    case "SET_STATUS":
-      return { ...state, status: action.payload };
-    case "WS_STATUS":
-      return { ...state, wsStatus: action.payload };
-    default:
-      return state;
-  }
-};
-
-function resolveBackendBase() {
-  if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
-    return "https://backend-production-f463.up.railway.app";
-  }
-  return "http://localhost:8000";
-}
-
-const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveBackendBase())
-  .replace(/\/+$/, "")
-  .replace(/\/api$/, "");
-
-type HiddenHook = [HiddenCardState | null, Dispatch<SetStateAction<HiddenCardState | null>>];
-
-function useHiddenCard(): HiddenHook {
-  const [value, setValue] = useState<HiddenCardState | null>(null);
-
-  useEffect(() => {
-    if (!value) return;
-    if (value.stage === "incoming") {
-      const id = window.setTimeout(() => {
-        setValue((prev) => (prev ? { ...prev, stage: "active" } : prev));
-      }, 60);
-      return () => window.clearTimeout(id);
-    }
-  }, [value]);
-
-  return [value, setValue];
-}
-
 export default function Host() {
-  const [state, dispatch] = useReducer(hostReducer, initialHostState);
+  const [params] = useSearchParams();
+  const codeParam = params.get("code") || "";
+  const [code, setCode] = useState(codeParam || "");
+  const [room, setRoom] = useState<Room | null>(null);
+  const [hiddenCard, setHiddenCard] = useState<HiddenCardState | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string>("");
+  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
   const [hostId, setHostId] = useState<string>("");
-  const [qr, setQr] = useState<string>("");
   const [playlistId, setPlaylistId] = useState<string>("");
+  const [playlistName, setPlaylistName] = useState<string>("");
   const [tiePolicy, setTiePolicy] = useState<"strict" | "lenient">("lenient");
-  const [health, setHealth] = useState<string>("");
-  const [spotifyLinked, setSpotifyLinked] = useState<boolean>(false);
-  const [playlists, setPlaylists] = useState<any[]>([]);
-  const [hiddenCard, setHiddenCard] = useHiddenCard();
-  const connRef = useRef<ReturnType<typeof connectWS> | null>(null);
+  const [spotifyConnected, setSpotifyConnected] = useState<boolean>(false);
+  
+  // Generate a host ID if not already set
+  useEffect(() => {
+    if (!hostId) {
+      const newHostId = "h-" + Math.random().toString(36).slice(2, 8);
+      setHostId(newHostId);
+    }
+  }, [hostId]);
 
-
-
-  const connectToRoom = useCallback((code: string, hid: string) => {
-    dispatch({ type: "WS_STATUS", payload: "connecting" });
-    const conn = connectWS(code, (evt: WSEvent) => {
-      switch (evt.event) {
-        case "room:init":
-          dispatch({ type: "ROOM_INIT", payload: evt.data as RoomSnapshot });
-          break;
-        case "turn:begin":
-          setHiddenCard(null);
-          dispatch({ type: "TURN_BEGIN", payload: evt.data });
-          break;
-        case "turn:play":
-          dispatch({ type: "TURN_PLAY", payload: evt.data });
-          setHiddenCard({
-            key: `${evt.data.turnId}-${evt.data.song.trackId}`,
-            playerId: evt.data.playerId,
-            track: {
-              trackId: evt.data.song.trackId,
-              uri: evt.data.song.uri,
-              release: evt.data.song.release,
-            },
-            stage: "incoming",
-          });
-          break;
-        case "turn:placing":
-          dispatch({ type: "TURN_PLACING", payload: evt.data });
-          break;
-        case "turn:result":
-          dispatch({ type: "TURN_RESULT", payload: evt.data });
-          setHiddenCard((prev) => {
-            if (!prev || prev.playerId !== evt.data.playerId) return null;
-            return { ...prev, stage: evt.data.correct ? "revealing" : "failed" };
-          });
-          setTimeout(() => setHiddenCard(null), evt.data.correct ? 450 : 450);
-          break;
-        case "game:finish":
-          dispatch({ type: "GAME_FINISH", payload: evt.data });
-          break;
-        default:
-          break;
-      }
-    });
-    conn.ws.addEventListener("open", () => dispatch({ type: "WS_STATUS", payload: "open" }));
-    conn.ws.addEventListener("close", () => dispatch({ type: "WS_STATUS", payload: "closed" }));
-    conn.send("join", { id: hid, name: "HOST", is_host: true });
-    connRef.current = conn;
-  }, [setHiddenCard]);
-  const loadSpotifyState = useCallback(async (hid: string) => {
-    try {
-      const status = await fetch(`${API_BASE}/api/spotify/status?hostId=${hid}`).then((r) => r.json());
-      setSpotifyLinked(!!status?.linked);
-      if (status?.linked) {
-        const pls = await fetch(`${API_BASE}/api/spotify/playlists?hostId=${hid}`).then((r) => r.json());
-        setPlaylists(pls?.items || []);
-      }
-    } catch (err) {
-      console.warn("spotify status", err);
+  // Handle WebSocket events
+  const handleWsEvent = useCallback((evt: WSEvent) => {
+    console.log("[WS]", evt.event, evt.data);
+    switch (evt.event) {
+      case "room:init":
+        setRoom(evt.data as Room);
+        break;
+      case "turn:begin":
+        setStatusMessage(`Turn: ${evt.data.currentPlayerId}`);
+        setHiddenCard(null);
+        break;
+      case "turn:play":
+        setHiddenCard({
+          playerId: evt.data.playerId,
+          trackId: evt.data.song.trackId,
+          uri: evt.data.song.uri,
+          release: evt.data.song.release,
+        });
+        break;
+      case "turn:result":
+        setStatusMessage(
+          evt.data.correct
+            ? "✅ Correct placement!"
+            : "❌ Incorrect placement."
+        );
+        break;
+      case "game:finish":
+        setStatusMessage(`Game finished! Winner: ${evt.data.winnerId || "None"}`);
+        break;
+      case "game:error":
+        setStatusMessage(`Error: ${evt.data.message}`);
+        break;
+      default:
+        break;
     }
   }, []);
+
+  // Connect to WebSocket when code is available
+  useEffect(() => {
+    if (!code) return;
+    
+    setWsStatus("connecting");
+    const conn = connectWS(code);
+    
+    conn.onOpen(() => {
+      setWsStatus("open");
+      conn.send("join", { id: hostId, name: "HOST", is_host: true });
+    });
+    
+    conn.onClose(() => {
+      setWsStatus("closed");
+    });
+    
+    conn.onEvent(handleWsEvent);
+    
+    return () => {
+      conn.close();
+    };
+  }, [code, handleWsEvent, hostId]);
+
+  // Create a new room
   const createRoom = useCallback(async () => {
     try {
-      if (connRef.current?.ws) {
-        connRef.current.ws.close();
+      const resp = await fetch(`/api/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostId }),
+      });
+      
+      if (!resp.ok) {
+        throw new Error(`Failed to create room: ${resp.status}`);
       }
-      const reqUrl = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}` : `${API_BASE}/api/create-room`;
-      const res = await fetch(reqUrl, { mode: "cors" as RequestMode });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setHostId(data.hostId);
-      const joinUrl = `${window.location.origin}/join?code=${data.code}`;
-      const qrData = await QRCode.toDataURL(joinUrl);
-      setQr(qrData);
-      connectToRoom(data.code, data.hostId);
-      loadSpotifyState(data.hostId);
-      dispatch({ type: "SET_STATUS", payload: `Room ${data.code} created` });
-    } catch (err: any) {
-      console.error("create room", err);
-      dispatch({ type: "SET_STATUS", payload: `Create failed: ${err?.message || err}` });
-    }
-  }, [hostId, connectToRoom, loadSpotifyState]);
-
-
-  const testBackend = useCallback(async () => {
-    setHealth("Testing...");
-    try {
-      const res = await fetch(`${API_BASE}/api/health`, { mode: "cors" as RequestMode });
-      const data = await res.json();
-      setHealth(`ok: ${res.status} ${JSON.stringify(data)}`);
-    } catch (err: any) {
-      setHealth(`error: ${err?.message || err}`);
-    }
-  }, []);
-
-
-
-  const connectSpotify = useCallback(async () => {
-    if (!hostId) return;
-    try {
-      const resp = await fetch(`${API_BASE}/api/spotify/login?hostId=${hostId}`);
+      
       const data = await resp.json();
-      if (data?.authorize_url) {
-        window.location.href = data.authorize_url;
+      setCode(data.code);
+      setStatusMessage(`Room created: ${data.code}`);
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err.message}`);
+    }
+  }, [hostId]);
+
+  // Connect to Spotify
+  const connectSpotify = useCallback(async () => {
+    try {
+      const resp = await fetch(`/api/spotify/auth?hostId=${encodeURIComponent(hostId)}`);
+      if (!resp.ok) {
+        throw new Error(`Failed to get auth URL: ${resp.status}`);
       }
-    } catch (err) {
-      console.error("spotify login", err);
+      const data = await resp.json();
+      window.open(data.url, "_blank");
+      setStatusMessage("Spotify auth window opened");
+      
+      // Poll for connection status
+      const checkStatus = async () => {
+        try {
+          const statusResp = await fetch(`/api/spotify/status?hostId=${encodeURIComponent(hostId)}`);
+          if (statusResp.ok) {
+            const statusData = await statusResp.json();
+            if (statusData.connected) {
+              setSpotifyConnected(true);
+              setStatusMessage("Spotify connected");
+              return true;
+            }
+          }
+        } catch (err) {
+          console.error("Error checking Spotify status:", err);
+        }
+        return false;
+      };
+      
+      // Check status every 2 seconds for 60 seconds
+      let attempts = 0;
+      const interval = setInterval(async () => {
+        const connected = await checkStatus();
+        attempts++;
+        if (connected || attempts >= 30) {
+          clearInterval(interval);
+        }
+      }, 2000);
+      
+      return () => clearInterval(interval);
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err.message}`);
     }
-  }, [hostId, connectToRoom, loadSpotifyState]);
+  }, [hostId]);
 
-  const startGame = useCallback(() => {
-    if (!connRef.current || !state.room) return;
-    connRef.current.send("start", {
-      hostId,
-      playlistId,
-      playlistName: "",
-      tiePolicy,
-    });
-    dispatch({ type: "SET_STATUS", payload: "Start requested" });
-  }, [state.room, hostId, playlistId, tiePolicy]);
+  // Start the game
+  const startGame = useCallback(async () => {
+    if (!code) {
+      setStatusMessage("No room code");
+      return;
+    }
+    
+    try {
+      const conn = connectWS(code);
+      conn.send("start", {
+        hostId,
+        playlistId,
+        playlistName,
+        tiePolicy,
+      });
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err.message}`);
+    }
+  }, [code, hostId, playlistId, playlistName, tiePolicy]);
 
+  // Check Spotify connection status on component mount
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const hid = params.get("hostId");
-    const spotifyOk = params.get("spotify");
-    if (hid) {
-      setHostId(hid);
-      loadSpotifyState(hid);
+    if (hostId) {
+      fetch(`/api/spotify/status?hostId=${encodeURIComponent(hostId)}`)
+        .then(resp => resp.json())
+        .then(data => {
+          setSpotifyConnected(data.connected);
+          if (data.connected) {
+            setStatusMessage("Spotify connected");
+          }
+        })
+        .catch(err => console.error("Error checking Spotify status:", err));
     }
-    if (hid && spotifyOk === "ok") {
-      loadSpotifyState(hid);
-    }
-  }, [loadSpotifyState]);
+  }, [hostId]);
 
-  useEffect(() => {
-    return () => {
-      if (connRef.current?.ws) {
-        connRef.current.ws.close();
+  // Fetch playlists when Spotify is connected
+  const fetchPlaylists = useCallback(async () => {
+    if (!hostId || !spotifyConnected) return;
+    
+    try {
+      const resp = await fetch(`/api/spotify/playlists?hostId=${encodeURIComponent(hostId)}`);
+      if (!resp.ok) {
+        throw new Error(`Failed to fetch playlists: ${resp.status}`);
       }
-    };
-  }, []);
+      const data = await resp.json();
+      // Handle playlists data
+      console.log("Playlists:", data);
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err.message}`);
+    }
+  }, [hostId, spotifyConnected]);
 
-  const discardCount = state.room?.deck?.discard?.length ?? 0;
-  const activePlayer = useMemo(() => {
-    const id = state.room?.turn?.currentPlayerId;
-    if (!id) return null;
-    return state.room?.players.find((p) => p.id === id) ?? null;
-  }, [state.room]);
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      <header className="grid grid-cols-3 items-start gap-6 px-8 py-6">
-        <div className="space-y-2">
-          <h1 className="text-3xl font-bold">HITSTER Tabletop — Host</h1>
-          <p className="text-sm text-slate-400">API: {API_BASE}</p>
-          <p className="text-sm text-emerald-300">Status: {state.status}</p>
-        </div>
-        <div className="space-y-2">
-          <button
+  // Render Lobby view
+  const renderLobby = () => (
+    <div className="min-h-screen bg-zinc-900 text-white p-8">
+      <h1 className="text-3xl font-bold mb-6">HITSTER - Host Lobby</h1>
+      
+      {!code ? (
+        <div className="mb-6">
+          <button 
             onClick={createRoom}
-            className="w-full rounded bg-emerald-500 py-3 text-lg font-semibold text-black"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded"
           >
             Create Room
           </button>
-          <button
-            onClick={testBackend}
-            className="w-full rounded bg-slate-800 py-2 text-sm"
+        </div>
+      ) : (
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold mb-2">Room Code: {code}</h2>
+          <p className="mb-4">Share this code with players to join</p>
+          
+          {/* QR Code would go here */}
+          <div className="bg-white p-4 inline-block mb-4">
+            <div className="text-black text-center">[QR Code for {code}]</div>
+          </div>
+        </div>
+      )}
+      
+      <div className="mb-6">
+        <h2 className="text-xl font-bold mb-2">Spotify Connection</h2>
+        {spotifyConnected ? (
+          <div className="text-green-400 mb-2">✓ Connected to Spotify</div>
+        ) : (
+          <button 
+            onClick={connectSpotify}
+            className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
           >
-            Test Backend
+            Connect Spotify
           </button>
-          {health && <p className="text-xs text-slate-400">{health}</p>}
-        </div>
-        <div className="space-y-2 text-sm text-slate-300">
-          <div>WS: <span className={state.wsStatus === "open" ? "text-emerald-300" : "text-yellow-300"}>{state.wsStatus}</span></div>
-          <div>Room: {state.room?.code ?? "-"}</div>
-          <div>Active: {activePlayer?.name ?? "-"}</div>
-          <div>Winner: {state.room?.winnerId ?? "-"}</div>
-        </div>
-      </header>
-
-      <main className="flex h-[65vh] items-stretch justify-center px-8">
-        <div className="relative w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/80">
-          <Tabletop
-            room={state.room}
-            hiddenCard={hiddenCard}
-            statusMessage={activePlayer ? `${activePlayer.name}'s turn` : ""}
-            discardCount={discardCount}
-            debug={true}
-          />
-        </div>
-      </main>
-
-      <section className="mt-6 grid grid-cols-3 gap-6 px-8 pb-8 text-sm">
-        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
-          <h2 className="text-lg font-semibold">Room Sharing</h2>
-          {state.room?.code ? (
-            <>
-              <div className="text-3xl font-mono text-emerald-400">{state.room.code}</div>
-              {qr ? <img src={qr} alt="QR" className="h-32 w-32 rounded bg-white p-2" /> : null}
-            </>
-          ) : (
-            <p className="text-slate-400">Create a room to generate a join QR.</p>
-          )}
-        </div>
-        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
-          <h2 className="text-lg font-semibold">Spotify</h2>
-          <div className="flex items-center justify-between text-sm">
-            <span>Linked</span>
-            <span className={spotifyLinked ? "text-emerald-300" : "text-red-300"}>
-              {spotifyLinked ? "yes" : "no"}
-            </span>
+        )}
+      </div>
+      
+      {spotifyConnected && (
+        <div className="mb-6">
+          <h2 className="text-xl font-bold mb-2">Game Settings</h2>
+          
+          <div className="mb-4">
+            <label className="block text-sm font-bold mb-2">Playlist</label>
+            <input 
+              type="text" 
+              value={playlistId} 
+              onChange={(e) => setPlaylistId(e.target.value)}
+              placeholder="Playlist ID"
+              className="bg-zinc-800 text-white px-3 py-2 rounded w-full max-w-md"
+            />
           </div>
-          {!spotifyLinked ? (
-            <button
-              onClick={connectSpotify}
-              className="w-full rounded bg-emerald-500 py-2 text-black"
+          
+          <div className="mb-4">
+            <label className="block text-sm font-bold mb-2">Playlist Name (optional)</label>
+            <input 
+              type="text" 
+              value={playlistName} 
+              onChange={(e) => setPlaylistName(e.target.value)}
+              placeholder="Playlist Name"
+              className="bg-zinc-800 text-white px-3 py-2 rounded w-full max-w-md"
+            />
+          </div>
+          
+          <div className="mb-4">
+            <label className="block text-sm font-bold mb-2">Tie Policy</label>
+            <select 
+              value={tiePolicy} 
+              onChange={(e) => setTiePolicy(e.target.value as "strict" | "lenient")}
+              className="bg-zinc-800 text-white px-3 py-2 rounded w-full max-w-md"
             >
-              Connect Spotify
-            </button>
-          ) : null}
-          {spotifyLinked ? (
-            <div className="space-y-2">
-              <label className="text-xs text-slate-400">Playlist</label>
-              <select
-                value={playlistId}
-                onChange={(e) => setPlaylistId(e.target.value)}
-                className="w-full rounded bg-slate-800 px-3 py-2"
-              >
-                <option value="">Default (Hitster)</option>
-                {playlists.map((p: any) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.tracks?.total ?? 0})
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
-          <div className="space-y-2">
-            <label className="text-xs text-slate-400">Tie Policy</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setTiePolicy("strict")}
-                className={`flex-1 rounded px-3 py-2 ${tiePolicy === "strict" ? "bg-emerald-500 text-black" : "bg-slate-800"}`}
-              >
-                Strict
-              </button>
-              <button
-                onClick={() => setTiePolicy("lenient")}
-                className={`flex-1 rounded px-3 py-2 ${tiePolicy === "lenient" ? "bg-emerald-500 text-black" : "bg-slate-800"}`}
-              >
-                Lenient
-              </button>
-            </div>
+              <option value="lenient">Lenient</option>
+              <option value="strict">Strict</option>
+            </select>
           </div>
-          <button
+        </div>
+      )}
+      
+      {code && room?.players && (
+        <div className="mb-6">
+          <h2 className="text-xl font-bold mb-2">Players ({room.players.length})</h2>
+          <ul className="bg-zinc-800 rounded p-4 max-w-md">
+            {room.players.map(player => (
+              <li key={player.id} className="mb-1">
+                {player.name} (Seat: {player.seat})
+              </li>
+            ))}
+            {room.players.length === 0 && (
+              <li className="text-zinc-500">No players joined yet</li>
+            )}
+          </ul>
+        </div>
+      )}
+      
+      {code && spotifyConnected && room?.players && room.players.length >= 2 && (
+        <div className="mt-6">
+          <button 
             onClick={startGame}
-            className="w-full rounded bg-blue-500 py-2 text-black disabled:opacity-40"
-            disabled={!state.room || state.room.players.length < 2}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg text-lg"
           >
             Start Game
           </button>
         </div>
-        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
-          <h2 className="text-lg font-semibold">Players</h2>
-          <div className="space-y-2">
-            {state.room?.players.map((p) => (
-              <div key={p.id} className="flex items-center justify-between rounded bg-slate-800/60 px-3 py-2">
-                <div>
-                  <div className="font-semibold text-slate-100">{p.name}</div>
-                  <div className="text-xs text-slate-400">Cards {p.timeline.length}</div>
-                </div>
-                <div className="text-sm text-emerald-300">★ {p.score}</div>
-              </div>
-            ))}
-            {!state.room?.players?.length ? <div className="text-slate-500">Waiting for players…</div> : null}
-          </div>
+      )}
+      
+      {code && spotifyConnected && room?.players && room.players.length < 2 && (
+        <div className="mt-6">
+          <button 
+            disabled
+            className="bg-blue-800 text-gray-300 font-bold py-3 px-6 rounded-lg text-lg cursor-not-allowed"
+          >
+            Need at least 2 players to start
+          </button>
         </div>
-      </section>
+      )}
+      
+      <div className="mt-4 text-sm text-zinc-500">
+        {statusMessage}
+      </div>
     </div>
   );
+
+  // Render Tabletop view
+  const renderTabletop = () => (
+    <div className="h-screen w-screen overflow-hidden bg-zinc-900">
+      <Tabletop 
+        room={room} 
+        hiddenCard={hiddenCard} 
+        statusMessage={statusMessage}
+        debug={false}
+      />
+      <div className="absolute top-4 right-4 text-white bg-black bg-opacity-50 p-2 rounded text-sm">
+        Want to play? Join from your phone via QR.
+      </div>
+    </div>
+  );
+
+  // Determine which view to render based on room status
+  const shouldShowLobby = !room || room.status === "lobby" || room.status === "setup";
+  
+  return shouldShowLobby ? renderLobby() : renderTabletop();
 }
