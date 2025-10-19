@@ -224,15 +224,12 @@ def _get_player(room: Room, player_id: str) -> Optional[Player]:
     return None
 
 def _cleanup_host_entries(room: Room):
-    # Filter out any HOST entries from the player list
-    # HOST should never be a player, only a spectator
     filtered = [
         p for p in room.players
         if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"
     ]
-      if len(filtered) != len(room.players):
-        removed = len(room.players) - len(filtered)
-        logger.info(f"[cleanup] removed {removed} host placeholders from room={room.code}")
+    if len(filtered) != len(room.players):
+        logger.info(f"[cleanup] removed host placeholders from room={room.code}")
     room.players = filtered
 
 def _find_room_for_turn(host_id: str, turn_id: str | None) -> Optional[tuple[str, Room]]:
@@ -269,7 +266,6 @@ def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str)
     return (lo, (left, right))
 
 def _deal_opening_cards(code: str, room: Room):
-    # Ensure HOST is not in players list
     _cleanup_host_entries(room)
     if not room.players:
         raise ValueError("No players to deal")
@@ -290,7 +286,6 @@ def _deal_opening_cards(code: str, room: Room):
     logger.info(f"[deal] room={code} players={len(room.players)} dealt_ids={dealt_ids}")
 
 async def _begin_turn(code: str, room: Room):
-    # Ensure HOST is not in players list
     _cleanup_host_entries(room)
     if room.status == "finished" or not room.players:
         return
@@ -326,7 +321,6 @@ async def _begin_turn(code: str, room: Room):
 async def _advance_turn(code: str, room: Room):
     if room.status == "finished":
         return
-    # Ensure HOST is not in players list before advancing turn
     _cleanup_host_entries(room)
     if not room.players:
         room.status = "finished"
@@ -429,7 +423,6 @@ async def ws_room(ws: WebSocket, code: str):
                 if room.status != "lobby":
                     await broadcast(code, "game:error", {"message": "Game already started or finished."})
                     continue
-                # Ensure HOST is not in players list before starting game
                 _cleanup_host_entries(room)
                 if len(room.players) < 2:
                     await broadcast(code, "game:error", {"message": "Need at least 2 players to start."})
