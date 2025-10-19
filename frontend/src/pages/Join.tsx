@@ -1,686 +1,767 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { connectWS, type WSEvent } from "../lib/ws";
 
-const FORCE_PLAY_URI = "spotify:track:4uLU6hMCjMI75M1A2tKUQC"; // Known playable track
-
-type SongLike = {
-  uri?: string | null;
-  id?: string | null;
-  name?: string;
-  artists?: string;
+type Release = {
+  date: string;
+  precision: "year" | "month" | "day";
 };
+
+type TrackCard = {
+  trackId: string;
+  uri: string;
+  name?: string;
+  artist?: string;
+  album?: string;
+  coverUrl?: string;
+  release: Release;
+};
+
+type PlayerState = {
+  id: string;
+  name: string;
+  score: number;
+  timeline: TrackCard[];
+  seat?: number;
+};
+
+type TurnPhase = "playing" | "placing" | "result" | null;
+
+type RoomSnapshot = {
+  code: string;
+  hostId: string;
+  status: "lobby" | "playing" | "placing" | "result" | "finished";
+  tiePolicy: "strict" | "lenient";
+  winnerId: string | null;
+  turnIndex: number;
+  turn: {
+    turnId: string;
+    currentPlayerId: string;
+    phase: "playing" | "placing" | "result";
+    drawn: TrackCard | null;
+  } | null;
+  deck: {
+    playlistId: string | null;
+    used: string[];
+    discard: string[];
+    remaining: number;
+  };
+  players: Array<{
+    id: string;
+    name: string;
+    score: number;
+    timeline: TrackCard[];
+    seat?: number;
+  }>;
+};
+
+type TurnPlayEvent = {
+  turnId: string;
+  playerId: string;
+  song: {
+    trackId: string;
+    uri: string;
+    release: Release;
+  };
+};
+
+type TurnResultEvent = {
+  turnId: string;
+  playerId: string;
+  correct: boolean;
+  newScore?: number;
+  finalIndex?: number;
+  placedTrack?: TrackCard;
+};
+
+type JoinInternalState = {
+  roomCode: string;
+  hostId: string;
+  meId: string;
+  players: PlayerState[];
+  turnId: string | null;
+  currentPlayerId: string | null;
+  turnPhase: TurnPhase;
+  drawnCard: TrackCard | null;
+  ghostIndex: number;
+  playInFlight: boolean;
+  confirmInFlight: boolean;
+  status: string;
+  lastResult?: { turnId: string; message: string; correct: boolean };
+  winnerId: string | null;
+  device: { id: string; name?: string } | null;
+};
+
+type JoinAction =
+  | { type: "SET_ROOM_CODE"; code: string }
+  | { type: "ROOM_INIT"; payload: RoomSnapshot }
+  | { type: "TURN_BEGIN"; payload: { turnId: string; currentPlayerId: string } }
+  | { type: "TURN_PLAY"; payload: TurnPlayEvent }
+  | { type: "TURN_PLACING"; payload: { turnId: string } }
+  | { type: "TURN_RESULT"; payload: TurnResultEvent }
+  | { type: "GAME_FINISH"; payload: { winnerId: string } }
+  | { type: "PLAY_REQUEST" }
+  | { type: "PLAY_FINISH"; payload: { status: string } }
+  | { type: "PLAY_FAILURE"; payload: { status: string } }
+  | { type: "CONFIRM_REQUEST"; payload: { status: string } }
+  | { type: "CONFIRM_SUCCESS"; payload: { status: string } }
+  | { type: "CONFIRM_FAILURE"; payload: { status: string } }
+  | { type: "SET_STATUS"; payload: { status: string } }
+  | { type: "SET_DEVICE"; payload: { id: string; name?: string } }
+  | { type: "SET_DRAWN"; payload: TrackCard | null }
+  | { type: "SET_GHOST_INDEX"; payload: number };
+
+const createInitialState = (meId: string): JoinInternalState => ({
+  roomCode: "",
+  hostId: "",
+  meId,
+  players: [],
+  turnId: null,
+  currentPlayerId: null,
+  turnPhase: null,
+  drawnCard: null,
+  ghostIndex: 0,
+  playInFlight: false,
+  confirmInFlight: false,
+  status: "",
+  lastResult: undefined,
+  winnerId: null,
+  device: null,
+});
+
+const formatYear = (release?: Release) => {
+  if (!release?.date) return "?";
+  return release.date.slice(0, 4);
+};
+
+const normalizePlayers = (players: RoomSnapshot["players"]): PlayerState[] => {
+  return [...players]
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      score: p.score ?? p.timeline.length,
+      timeline: p.timeline ?? [],
+      seat: p.seat,
+    }))
+    .sort((a, b) => {
+      if (a.seat !== undefined && b.seat !== undefined) {
+        return a.seat - b.seat;
+      }
+      return a.name.localeCompare(b.name);
+    });
+};
+
+const clampGhost = (index: number, length: number) => {
+  if (Number.isNaN(index)) return 0;
+  return Math.max(0, Math.min(index, length));
+};
+
+const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternalState => {
+  switch (action.type) {
+    case "SET_ROOM_CODE":
+      return { ...state, roomCode: action.code };
+    case "ROOM_INIT": {
+      const players = normalizePlayers(action.payload.players);
+      const turn = action.payload.turn;
+      const me = players.find((p) => p.id === state.meId);
+      const ghostIndex = me ? me.timeline.length : 0;
+      return {
+        ...state,
+        roomCode: action.payload.code || state.roomCode,
+        hostId: action.payload.hostId || state.hostId,
+        players,
+        turnId: turn?.turnId ?? null,
+        currentPlayerId: turn?.currentPlayerId ?? null,
+        turnPhase: turn?.phase ?? null,
+        drawnCard: null,
+        ghostIndex,
+        playInFlight: false,
+        confirmInFlight: false,
+        status: "Room synced",
+        lastResult: undefined,
+        winnerId: action.payload.winnerId ?? null,
+      };
+    }
+    case "TURN_BEGIN": {
+      const me = state.players.find((p) => p.id === state.meId);
+      const ghostIndex = me ? me.timeline.length : 0;
+      const isMine = action.payload.currentPlayerId === state.meId;
+      return {
+        ...state,
+        turnId: action.payload.turnId,
+        currentPlayerId: action.payload.currentPlayerId,
+        turnPhase: "playing",
+        drawnCard: null,
+        playInFlight: false,
+        confirmInFlight: false,
+        ghostIndex,
+        status: isMine ? "Your turn – tap Play to begin." : "Waiting for other player...",
+        lastResult: undefined,
+      };
+    }
+    case "TURN_PLAY": {
+      if (action.payload.playerId !== state.meId) {
+        return state;
+      }
+      return {
+        ...state,
+        drawnCard: {
+          trackId: action.payload.song.trackId,
+          uri: action.payload.song.uri,
+          release: action.payload.song.release,
+        },
+        status: "Hidden card ready. Tap Play to listen and place.",
+      };
+    }
+    case "TURN_PLACING": {
+      if (!state.turnId || action.payload.turnId !== state.turnId) {
+        return state;
+      }
+      return {
+        ...state,
+        turnPhase: "placing",
+        playInFlight: false,
+        status: state.currentPlayerId === state.meId ? "Choose the position using ↑ / ↓." : "Other player is placing...",
+      };
+    }
+    case "PLAY_REQUEST":
+      return { ...state, playInFlight: true, status: "Starting playback..." };
+    case "PLAY_FINISH":
+      return { ...state, playInFlight: false, status: action.payload.status };
+    case "PLAY_FAILURE":
+      return { ...state, playInFlight: false, status: action.payload.status };
+    case "CONFIRM_REQUEST":
+      return { ...state, confirmInFlight: true, status: action.payload.status };
+    case "CONFIRM_SUCCESS":
+      return { ...state, confirmInFlight: false, status: action.payload.status };
+    case "CONFIRM_FAILURE":
+      return { ...state, confirmInFlight: false, status: action.payload.status };
+    case "TURN_RESULT": {
+      if (!state.turnId || action.payload.turnId !== state.turnId) {
+        return state;
+      }
+      const updatedPlayers = state.players.map((p) => {
+        if (p.id !== action.payload.playerId) {
+          return p;
+        }
+        if (action.payload.correct && action.payload.placedTrack && typeof action.payload.finalIndex === "number") {
+          const timeline = [...p.timeline];
+          const insertIndex = clampGhost(action.payload.finalIndex, timeline.length);
+          timeline.splice(insertIndex, 0, action.payload.placedTrack);
+          return {
+            ...p,
+            score: action.payload.newScore ?? timeline.length,
+            timeline,
+          };
+        }
+        return {
+          ...p,
+          score: action.payload.newScore ?? p.score,
+        };
+      });
+      const me = updatedPlayers.find((p) => p.id === state.meId);
+      const ghostIndex = me ? me.timeline.length : state.ghostIndex;
+      const message = action.payload.correct
+        ? "✅ Correct placement!"
+        : "❌ Incorrect placement.";
+      return {
+        ...state,
+        players: updatedPlayers,
+        turnPhase: "result",
+        drawnCard: null,
+        playInFlight: false,
+        confirmInFlight: false,
+        ghostIndex,
+        status: message,
+        lastResult: {
+          turnId: action.payload.turnId,
+          message,
+          correct: action.payload.correct,
+        },
+      };
+    }
+    case "GAME_FINISH":
+      return {
+        ...state,
+        winnerId: action.payload.winnerId,
+        status: action.payload.winnerId
+          ? `Game finished! Winner: ${action.payload.winnerId}`
+          : "Game finished",
+      };
+    case "SET_STATUS":
+      return { ...state, status: action.payload.status };
+    case "SET_DEVICE":
+      return { ...state, device: { id: action.payload.id, name: action.payload.name } };
+    case "SET_DRAWN":
+      return { ...state, drawnCard: action.payload };
+    case "SET_GHOST_INDEX": {
+      const me = state.players.find((p) => p.id === state.meId);
+      const len = me ? me.timeline.length : 0;
+      return { ...state, ghostIndex: clampGhost(action.payload, len) };
+    }
+    default:
+      return state;
+  }
+};
+
+const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || `${window.location.protocol}//${window.location.host}`)
+  .replace(/\/+$/, "")
+  .replace(/\/api$/, "");
 
 export default function Join() {
   const [params] = useSearchParams();
   const codeParam = params.get("code") ?? "";
-  const safeMode = (params.get("safe") || "").trim() === "1";
-
   const [code, setCode] = useState(codeParam);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
-  const [, setRoom] = useState<any>(null);
-  const [playerCard, setPlayerCard] = useState<any>(null);
-  const [wins, setWins] = useState<Record<string, number>>({});
-  const [myTurn, setMyTurn] = useState(false);
-  const [currentSong, setCurrentSong] = useState<SongLike | null>(null);
-  const connRef = useRef<any>(null);
-  const playerRef = useRef<any>(null);
-  const playLockRef = useRef<boolean>(false);
-  const lastTurnIdRef = useRef<string | null>(null);
-  const [playDisabled, setPlayDisabled] = useState(false);
-  const [hostId, setHostId] = useState<string>("");
-  const [deviceId, setDeviceId] = useState<string>("");
-  const [, setPlayerReady] = useState(false);
-  const [status, setStatus] = useState<string>("idle");
-  const [phase, setPhase] = useState<'playing' | 'guess' | 'result' | 'idle'>("idle");
-  const phaseRef = useRef<'playing' | 'guess' | 'result' | 'idle'>("idle");
-  useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
-
-  const [lastEventType, setLastEventType] = useState<string>("");
-  const [lastEventTs, setLastEventTs] = useState<number | null>(null);
-  const [lastEventTurnId, setLastEventTurnId] = useState<string | null>(null);
-  const [playLock, setPlayLock] = useState(false);
-  const [lastQueueNextStatus, setLastQueueNextStatus] = useState<string>("");
-  const [lastPlayTrackStatus, setLastPlayTrackStatus] = useState<string>("");
-  const lastPlayClickTsRef = useRef<number | null>(null);
-  const [lastPlayClickTs, setLastPlayClickTs] = useState<number | null>(null);
-  const hasPlayedThisTurnRef = useRef(false);
-  const [hasPlayedThisTurn, setHasPlayedThisTurn] = useState(false);
-  const [duplicateTurnDetected, setDuplicateTurnDetected] = useState(false);
-  const [backendStats, setBackendStats] = useState<any>(null);
-  const [backendStatsTs, setBackendStatsTs] = useState<number | null>(null);
-  const [lastPlayPath, setLastPlayPath] = useState<string | null>(null);
-  const [lastTargetUri, setLastTargetUri] = useState<string | null>(null);
-  const [lastObservedUri, setLastObservedUri] = useState<string | null>(null);
-  const [lastIsPlaying, setLastIsPlaying] = useState<boolean | null>(null);
-  const [guessLockUntil, setGuessLockUntil] = useState<number>(0);
-  const guessLockUntilRef = useRef<number>(0);
-
-  const LISTENING_WINDOW_MS = 700;
-  const normalizeUri = (input?: string | null) => {
-    if (!input) return null;
-    return input.startsWith("spotify:track:") ? input : `spotify:track:${input}`;
-  };
-
-  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + "//" + location.host))
-    .replace(/\/+$/, "")
-    .replace(/\/api$/, "");
-
-  let WS_DEBUG_URL = "";
-  try {
-    const u = new URL(API_BASE);
-    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
-    WS_DEBUG_URL = `${wsProto}//${u.host}/ws/${encodeURIComponent(code)}`;
-  } catch {
-    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-    WS_DEBUG_URL = `${wsProto}//${location.host}/ws/${encodeURIComponent(code)}`;
-  }
-
+  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
+  const [state, dispatch] = useReducer(joinReducer, playerId, createInitialState);
+  const connRef = useRef<ReturnType<typeof connectWS> | null>(null);
+  const playerRef = useRef<any>(null);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
 
-  const handleWsEvent = (evt: WSEvent) => {
-    const eventType = evt?.event || "unknown";
-    const data = evt?.data ?? {};
-    const ts = Date.now();
+  const mePlayer = useMemo<PlayerState>(() => {
+    const existing = state.players.find((p) => p.id === state.meId);
+    if (existing) return existing;
+    return {
+      id: state.meId,
+      name,
+      score: 0,
+      timeline: [],
+    };
+  }, [state.players, state.meId, name]);
 
-    setLastEventType(eventType);
-    setLastEventTs(ts);
-    setLastEventTurnId(data.turnId ?? null);
-    setStatus(`event: ${eventType} (phase=${phaseRef.current})`);
+  const isMyTurn = state.currentPlayerId === mePlayer.id;
+  const phaseLabel = useMemo(() => {
+    if (state.winnerId) return "finished";
+    if (!state.turnId) return state.roomCode ? "waiting" : "lobby";
+    if (!isMyTurn) return "waiting";
+    if (state.turnPhase === "placing") return state.confirmInFlight ? "placing…" : "placing";
+    if (state.turnPhase === "result") return "result";
+    return state.playInFlight ? "playing…" : "playing";
+  }, [state.turnId, state.turnPhase, state.playInFlight, state.confirmInFlight, isMyTurn, state.roomCode, state.winnerId]);
 
-    console.log("[EVT]", eventType, data.turnId, "phase=", phaseRef.current);
-
-    if (eventType === "room:state") {
-      setRoom(data);
-      setHostId(data?.hostId || "");
-      return;
+  const handleWsEvent = useCallback((evt: WSEvent) => {
+    console.log("[WS]", evt.event, evt.data);
+    switch (evt.event) {
+      case "room:init":
+        dispatch({ type: "ROOM_INIT", payload: evt.data as RoomSnapshot });
+        break;
+      case "turn:begin":
+        dispatch({ type: "TURN_BEGIN", payload: evt.data });
+        break;
+      case "turn:play":
+        dispatch({ type: "TURN_PLAY", payload: evt.data as TurnPlayEvent });
+        break;
+      case "turn:placing":
+        dispatch({ type: "TURN_PLACING", payload: evt.data });
+        break;
+      case "turn:result":
+        dispatch({ type: "TURN_RESULT", payload: evt.data as TurnResultEvent });
+        break;
+      case "game:finish":
+        dispatch({ type: "GAME_FINISH", payload: evt.data });
+        break;
+      default:
+        break;
     }
+  }, []);
 
-    if (eventType === "game:init") {
-      setRoom({ code, players: data.players || [], state: "playing" });
-      setPlayerCard((data.playerCards || {})[playerId] || null);
-      setWins(data.wins || {});
-      hasPlayedThisTurnRef.current = false;
-      setHasPlayedThisTurn(false);
-      setPhase("idle");
-      setDuplicateTurnDetected(false);
-      setLastPlayPath(null);
-      setLastTargetUri(null);
-      setLastObservedUri(null);
-      setLastIsPlaying(null);
-      setGuessLockUntil(0);
-      guessLockUntilRef.current = 0;
-      return;
-    }
-
-    if (eventType === "turn:begin") {
-      const isMine = data.playerId === playerId;
-      setMyTurn(isMine);
-      setCurrentSong(null);
-      setPhase("idle");
-      hasPlayedThisTurnRef.current = false;
-      setHasPlayedThisTurn(false);
-      setDuplicateTurnDetected(false);
-      setLastPlayPath(null);
-      setLastTargetUri(null);
-      setLastObservedUri(null);
-      setLastIsPlaying(null);
-      setGuessLockUntil(0);
-      guessLockUntilRef.current = 0;
-      if (!isMine) {
-        console.log("[EVT:SKIP]", "turn:begin for other player", { playerId: data.playerId });
+  useEffect(() => {
+    return () => {
+      if (connRef.current?.ws) {
+        connRef.current.ws.close();
       }
-      return;
-    }
-
-    if (eventType === "turn:play") {
-      const incomingTurnId = typeof data.turnId === "string" ? data.turnId : (data.turnId ?? "").toString();
-      console.log("[EVT] turn:play detail", { incomingTurnId, lastTurnId: lastTurnIdRef.current, playerId: data.playerId });
-      if (incomingTurnId) {
-        if (lastTurnIdRef.current === incomingTurnId) {
-          console.log("[EVT:SKIP]", "same turnId (debug: allowing replay)");
-          setDuplicateTurnDetected(true);
-        } else {
-          lastTurnIdRef.current = incomingTurnId;
-          setDuplicateTurnDetected(false);
+      if (playerRef.current) {
+        try {
+          playerRef.current.disconnect();
+        } catch (err) {
+          console.warn("[spotify] disconnect error", err);
         }
       }
-      const isMine = data.playerId === playerId;
-      if (!isMine) {
-        console.log("[EVT:SKIP]", "not current player", { playerId: data.playerId });
-        setMyTurn(false);
-        setCurrentSong(null);
-        setPhase("idle");
-        setLastPlayPath(null);
-        return;
+    };
+  }, []);
+
+  const ensureActivation = useCallback(async () => {
+    try {
+      const player: any = playerRef.current;
+      if (player && typeof player.activateElement === "function") {
+        await player.activateElement();
+        dispatch({ type: "SET_STATUS", payload: { status: "Device activated" } });
       }
-      setMyTurn(true);
-      setCurrentSong(data.song || null);
-      setPhase("playing");
-      setLastPlayPath("pending");
-      setLastTargetUri(null);
-      setLastObservedUri(null);
-      setLastIsPlaying(null);
-      if (!data.song) {
-        console.log("[EVT:SKIP]", "no song payload provided");
-        return;
-      }
-      handleTurnPlay({ turnId: incomingTurnId, data: { song: data.song } });
-      return;
+    } catch (err: any) {
+      dispatch({ type: "SET_STATUS", payload: { status: `Activation failed: ${err?.message || err}` } });
     }
+  }, []);
 
-    if (eventType === "turn:result") {
-      setWins(data.wins || {});
-      setCurrentSong(data.song || null);
-      setPhase("result");
-      if (hostId && hasPlayedThisTurnRef.current) {
-        fetch(`${API_BASE}/api/spotify/pause`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hostId, device_id: deviceId, reason: "result" }),
-        }).catch(() => {});
-      } else {
-        console.log("[EVT:SKIP]", "pause skipped until playback confirmed", { hasPlayedThisTurn: hasPlayedThisTurnRef.current });
-      }
-      return;
-    }
-
-    if (eventType === "game:error") {
-      setStatus((prev) => `game error: ${data?.message || "unknown"} | ` + prev);
-      console.warn("[EVT] game:error", data);
-      return;
-    }
-
-    if (eventType === "game:finished") {
-      alert(data.winner ? `Winner: ${data.winner}` : (data.reason || "Game finished"));
-      return;
-    }
-  };
-
-  const join = () => {
-    setStatus("connecting ws...");
-    const ws = connectWS(code, (evt) => {
-      const ts = Date.now();
-      const turnId = evt?.data?.turnId;
-      console.log("[WS]", evt?.event, { turnId, phase: phaseRef.current, ts });
-      try {
-        handleWsEvent(evt);
-      } catch (err: any) {
-        console.error("[EVT:ERROR]", err);
-        setStatus(`handler error: ${err?.message || err}`);
-      }
-    });
-    ws.send("join", { id: playerId, name, is_host: false });
-    connRef.current = ws;
-    setJoined(true);
-    setStatus("joined");
-  };
-
-  // Load Spotify Web Playback SDK and init Player (must not be behind conditional returns)
   useEffect(() => {
-    const init = async () => {
-      if (!joined || !hostId) return; // wait until hostId is known
+    if (!joined || !state.hostId) return;
+    if (playerRef.current) return;
+
+    const initPlayer = () => {
+      const Spotify = (window as any).Spotify;
+      if (!Spotify) return;
+      const player = new Spotify.Player({
+        name: "HITSTER Tabletop",
+        getOAuthToken: async (cb: (token: string) => void) => {
+          try {
+            const resp = await fetch(`${API_BASE}/api/spotify/token?hostId=${encodeURIComponent(state.hostId)}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            cb(data.access_token);
+          } catch (err) {
+            console.warn("[spotify] token error", err);
+          }
+        },
+        volume: 0.7,
+      });
+      player.addListener("ready", ({ device_id }: any) => {
+        setDeviceId(device_id);
+        dispatch({ type: "SET_DEVICE", payload: { id: device_id, name: "Web Playback" } });
+        dispatch({ type: "SET_STATUS", payload: { status: `Spotify device ready (${device_id})` } });
+      });
+      player.addListener("not_ready", ({ device_id }: any) => {
+        if (deviceId === device_id) {
+          setDeviceId(null);
+        }
+        dispatch({ type: "SET_STATUS", payload: { status: `Spotify device ${device_id} not ready` } });
+      });
+      player.addListener("initialization_error", ({ message }: any) => {
+        dispatch({ type: "SET_STATUS", payload: { status: `Spotify init error: ${message}` } });
+      });
+      playerRef.current = player;
+      player.connect();
+    };
+
+    if (!(window as any).Spotify) {
       const existing = document.getElementById("spotify-sdk");
       if (!existing) {
-        const s = document.createElement("script");
-        s.id = "spotify-sdk";
-        s.src = "https://sdk.scdn.co/spotify-player.js";
-        s.async = true;
-        document.body.appendChild(s);
+        const script = document.createElement("script");
+        script.id = "spotify-sdk";
+        script.src = "https://sdk.scdn.co/spotify-player.js";
+        script.async = true;
+        document.body.appendChild(script);
       }
-      (window as any).onSpotifyWebPlaybackSDKReady = () => {
-        const player = new (window as any).Spotify.Player({
-          name: "HITSTER Player",
-          getOAuthToken: async (cb: any) => {
-            try {
-              const r = await fetch(`${API_BASE}/api/spotify/token?hostId=${hostId}`);
-              if (!r.ok) return;
-              const data = await r.json();
-              cb(data.access_token);
-            } catch {}
-          },
-          volume: 0.8,
-        });
-        playerRef.current = player;
-        player.addListener("ready", async ({ device_id }: any) => {
-          setDeviceId(device_id);
-          setPlayerReady(true);
-          setStatus((prev) => `sdk-ready (${device_id}); ` + prev);
-          try {
-            const r = await fetch(`${API_BASE}/api/spotify/transfer`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ hostId, device_id, play: false }),
-            });
-            setStatus((prev) => `transfer ${r.status} | ` + prev);
-          } catch {}
-        });
-        player.addListener("not_ready", () => {
-          setPlayerReady(false);
-          setStatus((prev) => `sdk-not-ready | ` + prev);
-        });
-        player.connect();
-      };
-    };
-    init();
-  }, [joined, hostId, API_BASE]);
-
-  async function ensureActivation() {
-    try {
-      const p: any = playerRef.current;
-      if (p && typeof p.activateElement === "function") {
-        await p.activateElement();
-        setStatus((prev) => `activated | ` + prev);
-      }
-    } catch (e: any) {
-      setStatus((prev) => `activate err: ${e?.message || e} | ` + prev);
+      (window as any).onSpotifyWebPlaybackSDKReady = initPlayer;
+    } else {
+      initPlayer();
     }
-  }
+  }, [joined, state.hostId, deviceId]);
 
-  const draw = async () => {
-    if (playLockRef.current) {
-      console.log("[DRAW:SKIP]", "playLock active");
+  const joinRoom = useCallback(() => {
+    if (!code.trim() || !name.trim()) return;
+    const roomCode = code.trim().toUpperCase();
+    dispatch({ type: "SET_ROOM_CODE", code: roomCode });
+    setWsStatus("connecting");
+    const conn = connectWS(roomCode, handleWsEvent);
+    connRef.current = conn;
+    conn.ws.addEventListener("open", () => setWsStatus("open"));
+    conn.ws.addEventListener("close", () => setWsStatus("closed"));
+    conn.send("join", { id: playerId, name: name.trim(), is_host: false });
+    setJoined(true);
+    dispatch({ type: "SET_STATUS", payload: { status: "Connected to room." } });
+  }, [code, name, playerId, handleWsEvent]);
+
+  const handlePlay = useCallback(async () => {
+    if (!state.turnId || !state.drawnCard) {
+      dispatch({ type: "SET_STATUS", payload: { status: "No hidden card available yet." } });
       return;
     }
-    playLockRef.current = true;
-    setPlayLock(true);
-    setPlayDisabled(true);
+    if (!state.hostId) {
+      dispatch({ type: "SET_STATUS", payload: { status: "Host not linked to Spotify." } });
+      return;
+    }
+    if (!deviceId) {
+      dispatch({ type: "SET_STATUS", payload: { status: "Spotify device not ready." } });
+      return;
+    }
+    dispatch({ type: "PLAY_REQUEST" });
     try {
       await ensureActivation();
-      if (!connRef.current) return;
-      connRef.current.send("turn:draw", { playerId, deviceId });
-      setStatus((prev) => `draw sent | ` + prev);
-    } finally {
-      playLockRef.current = false;
-      setPlayLock(false);
-      setPlayDisabled(false);
-    }
-  };
-
-  async function activateDevice() {
-    if (!deviceId || !hostId) return;
-    try {
-      const r = await fetch(`${API_BASE}/api/spotify/transfer`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hostId, device_id: deviceId, play: true }),
-      });
-      setStatus((prev) => `manual transfer ${r.status} | ` + prev);
-    } catch (e: any) {
-      setStatus((prev) => `transfer err: ${e?.message || e} | ` + prev);
-    }
-  }
-
-  const guess = async (choice: "before" | "after") => {
-    if (!connRef.current) return;
-    const now = Date.now();
-    if (now < guessLockUntilRef.current) {
-      console.log("[GUESS:SKIP]", "listening window active", {
-        remaining: guessLockUntilRef.current - now,
-      });
-      setStatus(`guess locked ${guessLockUntilRef.current - now}ms`);
-      return;
-    }
-    guessLockUntilRef.current = 0;
-    setGuessLockUntil(0);
-    try {
-      setPhase("guess");
-      if (hostId && hasPlayedThisTurnRef.current) {
-        await fetch(`${API_BASE}/api/spotify/pause`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hostId, device_id: deviceId, reason: "guess" }),
-        });
-      } else {
-        console.log("[PAUSE:SKIP]", "guess pause skipped", { hasPlayedThisTurn: hasPlayedThisTurnRef.current });
-      }
-    } catch {}
-    connRef.current.send("turn:guess", { playerId, choice });
-  };
-
-  async function handleTurnPlay(evt: { turnId: string; data: { song: SongLike } }) {
-    console.log("[HANDLE TURN PLAY]", { turnId: evt.turnId, lastTurnId: lastTurnIdRef.current });
-    if (evt.turnId && lastTurnIdRef.current !== evt.turnId) {
-      lastTurnIdRef.current = evt.turnId;
-    }
-    return onPlayOnce(evt.data.song, evt.turnId);
-  }
-
-  async function onPlayOnce(song: SongLike, turnId?: string) {
-    if (playLockRef.current) {
-      console.log("[PLAY:SKIP]", "lock active");
-      return;
-    }
-    if (!deviceId || !hostId) {
-      console.log("[PLAY:SKIP]", "missing device or host", { deviceId, hostId });
-      return;
-    }
-    playLockRef.current = true;
-    setPlayLock(true);
-    setPlayDisabled(true);
-    setLastPlayPath("pending");
-    setLastObservedUri(null);
-    setLastIsPlaying(null);
-    setLastPlayTrackStatus("");
-    const now = Date.now();
-    lastPlayClickTsRef.current = now;
-    setLastPlayClickTs(now);
-
-    const uri = song?.uri ?? null;
-    const id = song?.id ?? null;
-    const targetUri = normalizeUri(uri || (id ? `spotify:track:${id}` : null));
-    setLastTargetUri(targetUri);
-
-    const body = { hostId, device_id: deviceId, uri, id, turn_id: turnId ?? null };
-    console.log("[PLAY] queue_next", `${API_BASE}/api/spotify/queue_next`, body);
-    setLastQueueNextStatus("pending");
-    try {
-      const queueResp = await fetch(`${API_BASE}/api/spotify/queue_next`, {
+      const body = {
+        hostId: state.hostId,
+        device_id: deviceId,
+        turnId: state.turnId,
+        uri: state.drawnCard.uri,
+        id: state.drawnCard.trackId,
+      };
+      const resp = await fetch(`${API_BASE}/api/spotify/queue_next`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(body),
       });
-
-      if (queueResp.status === 202) {
-        const payload = await queueResp.json().catch(() => ({}));
-        const label = payload?.status ? `202 ${payload.status}` : "202 in-flight";
-        setLastQueueNextStatus(label);
-        setStatus(label);
-        setLastPlayPath("pending");
-        setLastPlayTrackStatus(label);
-        setLastObservedUri(null);
-        setLastIsPlaying(null);
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        dispatch({ type: "PLAY_FAILURE", payload: { status: `queue_next ${resp.status} ${text}` } });
         return;
       }
-
-      if (!queueResp.ok) {
-        const text = await queueResp.text().catch(() => "");
-        const label = `error ${queueResp.status} ${text}`.trim();
-        setLastQueueNextStatus(label);
-        setStatus(label);
-        setLastPlayPath("error");
-        setLastPlayTrackStatus(label);
-        setLastObservedUri(null);
-        setLastIsPlaying(null);
-        return;
-      }
-
-      const data = await queueResp.json().catch(() => ({}));
-      const observed = normalizeUri(data?.observed_uri ?? data?.observedUri ?? null);
-      const playing = typeof data?.is_playing === "boolean" ? data.is_playing : null;
-      const path = data?.path || "queue";
-
-      setLastQueueNextStatus(`ok ${queueResp.status}`);
-      setStatus(`queue_next path=${path} playing=${playing}`);
-      setLastPlayPath(path);
-      setLastObservedUri(observed);
-      setLastIsPlaying(playing);
-      setLastPlayTrackStatus(`server path ${path}`);
-
-      if (playing === true || observed === targetUri) {
-        hasPlayedThisTurnRef.current = true;
-        setHasPlayedThisTurn(true);
-        const unlockAt = Date.now() + LISTENING_WINDOW_MS;
-        setGuessLockUntil(unlockAt);
-        guessLockUntilRef.current = unlockAt;
-      }
+      const data = await resp.json().catch(() => ({}));
+      const msg = data?.path ? `queue_next path=${data.path} playing=${data.is_playing}` : "queue_next OK";
+      dispatch({ type: "PLAY_FINISH", payload: { status: msg } });
     } catch (err: any) {
-      setLastQueueNextStatus(`exception ${err?.message || err}`);
-      console.error("[PLAY] exception", err);
-    } finally {
-      playLockRef.current = false;
-      setPlayLock(false);
-      setPlayDisabled(false);
+      dispatch({ type: "PLAY_FAILURE", payload: { status: `queue_next error: ${err?.message || err}` } });
     }
-  }
+  }, [state.turnId, state.drawnCard, state.hostId, deviceId, ensureActivation]);
 
-  async function forcePlayTest() {
-    if (!hostId || !deviceId) {
-      console.warn("[FORCE PLAY] missing host/device", { hostId, deviceId });
+  const handleConfirm = useCallback(async () => {
+    if (!state.turnId) {
+      dispatch({ type: "SET_STATUS", payload: { status: "No active turn." } });
       return;
     }
+    dispatch({ type: "CONFIRM_REQUEST", payload: { status: "Submitting placement..." } });
     try {
-      console.log("[FORCE PLAY]", { uri: FORCE_PLAY_URI });
-      const r = await fetch(`${API_BASE}/api/spotify/play_track`, {
+      const resp = await fetch(`${API_BASE}/api/turn/confirm_position`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ hostId, device_id: deviceId, uri: FORCE_PLAY_URI }),
+        body: JSON.stringify({
+          roomCode: state.roomCode,
+          playerId,
+          turnId: state.turnId,
+          targetIndex: state.ghostIndex,
+        }),
       });
-      setLastPlayTrackStatus(`force ${r.status}`);
-    } catch (err: any) {
-      setLastPlayTrackStatus(`force error ${err?.message || err}`);
-    }
-  }
-
-  async function refreshDebugStats() {
-    if (!hostId) {
-      console.log("[DEBUG STATS]", "skip (no hostId)");
-      return;
-    }
-    try {
-      const r = await fetch(`${API_BASE}/api/debug/stats?hostId=${encodeURIComponent(hostId)}`);
-      if (!r.ok) {
-        const text = await r.text().catch(() => "");
-        console.warn("[DEBUG STATS] HTTP", r.status, text);
-        setBackendStats({ error: r.status, text });
-        setBackendStatsTs(Date.now());
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        dispatch({ type: "CONFIRM_FAILURE", payload: { status: `confirm ${resp.status} ${text}` } });
         return;
       }
-      const data = await r.json();
-      setBackendStats(data);
-      setBackendStatsTs(Date.now());
-      console.log("[DEBUG STATS]", data);
-    } catch (err) {
-      setBackendStats({ error: err instanceof Error ? err.message : String(err) });
-      setBackendStatsTs(Date.now());
+      dispatch({ type: "CONFIRM_SUCCESS", payload: { status: "Placement submitted." } });
+    } catch (err: any) {
+      dispatch({ type: "CONFIRM_FAILURE", payload: { status: `confirm error: ${err?.message || err}` } });
     }
+  }, [state.turnId, state.roomCode, state.ghostIndex, playerId]);
+
+  const moveGhost = useCallback(
+    (delta: number) => {
+      if (!isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight) return;
+      const next = state.ghostIndex + delta;
+      dispatch({ type: "SET_GHOST_INDEX", payload: next });
+    },
+    [state.ghostIndex, state.turnPhase, state.confirmInFlight, isMyTurn]
+  );
+
+  useEffect(() => {
+    if (!isMyTurn || state.turnPhase !== "placing") return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveGhost(-1);
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveGhost(1);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        handleConfirm();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isMyTurn, state.turnPhase, moveGhost, handleConfirm]);
+
+  const ghostElements = useMemo(() => {
+    const items: ReactNode[] = [];
+    const length = mePlayer.timeline.length;
+    for (let i = 0; i <= length; i += 1) {
+      if (isMyTurn && state.turnPhase === "placing" && state.ghostIndex === i) {
+        items.push(
+          <div
+            key={`ghost-${i}`}
+            className="rounded border border-emerald-400/70 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+          >
+            Hidden card position
+          </div>
+        );
+      }
+      if (i < length) {
+        const card = mePlayer.timeline[i];
+        items.push(
+          <div key={`card-${card.trackId}-${i}`} className="rounded bg-zinc-800 px-3 py-2 text-sm">
+            <div className="text-emerald-300 font-semibold">{formatYear(card.release)}</div>
+            <div className="text-white/90">{card.name ?? "Revealed card"}</div>
+            <div className="text-white/60">{card.artist ?? ""}</div>
+          </div>
+        );
+      }
+    }
+    return items;
+  }, [mePlayer.timeline, isMyTurn, state.turnPhase, state.ghostIndex]);
+
+  const playDisabled = !isMyTurn || state.turnPhase !== "playing" || state.playInFlight || !state.drawnCard;
+  const placementDisabled = !isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight;
+
+  const otherPlayers = useMemo(() => state.players.filter((p) => p.id !== mePlayer.id), [state.players, mePlayer.id]);
+
+  const winner = state.winnerId ? state.players.find((p) => p.id === state.winnerId)?.name ?? state.winnerId : null;
+
+  if (!joined) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-white px-6 py-10">
+        <div className="mx-auto max-w-md space-y-6">
+          <h1 className="text-3xl font-bold">Join Table</h1>
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm text-zinc-400">Room code</label>
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                className="mt-1 w-full rounded bg-zinc-900 px-3 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="ABCD"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-zinc-400">Your name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 w-full rounded bg-zinc-900 px-3 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="Player"
+              />
+            </div>
+            <button
+              onClick={joinRoom}
+              disabled={!code.trim() || !name.trim()}
+              className="w-full rounded bg-emerald-500 py-3 text-lg font-semibold text-black disabled:opacity-40"
+            >
+              Join Game
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  const guessLocked = Date.now() < guessLockUntil;
-
-  const playButtonDisabled =
-    playDisabled || !myTurn || phase !== "playing" || !currentSong || !deviceId || !hostId;
-  const playDisabledReasons: string[] = [];
-  if (playDisabled) playDisabledReasons.push("playDisabled state");
-  if (!myTurn) playDisabledReasons.push("not my turn");
-  if (phase !== "playing") playDisabledReasons.push(`phase ${phase}`);
-  if (!currentSong) playDisabledReasons.push("no current song");
-  if (!deviceId) playDisabledReasons.push("no deviceId");
-  if (!hostId) playDisabledReasons.push("no hostId");
-
-  const hudLines = [
-    `phase: ${phase}`,
-    `isCurrentPlayer: ${myTurn}`,
-    `lastTurnId: ${lastTurnIdRef.current || "-"}`,
-    `lastEventType: ${lastEventType || "-"}`,
-    `lastEventTurnId: ${lastEventTurnId || "-"}`,
-    `lastEventTs: ${lastEventTs ? new Date(lastEventTs).toLocaleTimeString() : "-"}`,
-    `playDisabled: ${playButtonDisabled}`,
-    `playDisabledReasons: ${playDisabledReasons.join(", ") || "none"}`,
-    `playLock: ${playLock}`,
-    `lastPlayClickTs: ${lastPlayClickTs ? new Date(lastPlayClickTs).toLocaleTimeString() : "-"}`,
-    `deviceId: ${deviceId || "n/a"}`,
-    `hostId: ${hostId || "n/a"}`,
-    `lastQueueNextStatus: ${lastQueueNextStatus || "n/a"}`,
-    `lastPlayTrackStatus: ${lastPlayTrackStatus || "n/a"}`,
-    `lastPlayPath: ${lastPlayPath || "-"}`,
-    `lastTargetUri: ${lastTargetUri || "-"}`,
-    `lastObservedUri: ${lastObservedUri || "-"}`,
-    `lastIsPlaying: ${lastIsPlaying === null ? "n/a" : lastIsPlaying}`,
-    `hasPlayedThisTurn: ${hasPlayedThisTurn}`,
-    `duplicateTurnDetected: ${duplicateTurnDetected}`,
-    `guessLockActive: ${guessLocked}`,
-    `guessLockUntil: ${guessLockUntil ? new Date(guessLockUntil).toLocaleTimeString() : "-"}`,
-    `backendStatsTs: ${backendStatsTs ? new Date(backendStatsTs).toLocaleTimeString() : "-"}`,
-  ];
-
-  const hud = (
-    <div className="fixed top-2 left-2 z-50 max-w-sm space-y-1 rounded bg-black/80 p-3 text-xs text-white">
-      <div className="font-semibold">Debug HUD</div>
-      {hudLines.map((line) => (
-        <div key={line}>{line}</div>
-      ))}
-      {backendStats && (
-        <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2">
-{JSON.stringify(backendStats, null, 2)}
-        </pre>
-      )}
-    </div>
-  );
-
-  if (!joined)
-    return (
-      <div className="min-h-screen bg-zinc-900 p-6 text-white">
-        {hud}
-        <h1 className="text-2xl font-bold">Join Room</h1>
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="Code"
-          className="mt-4 w-full rounded bg-zinc-800 px-3 py-2"
-        />
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Your name"
-          className="mt-3 w-full rounded bg-zinc-800 px-3 py-2"
-        />
-        <button
-          onClick={join}
-          disabled={!code || !name}
-          className="mt-4 rounded bg-emerald-600 px-4 py-2 disabled:opacity-50"
-        >
-          Join
-        </button>
-      </div>
-    );
-
-  const safeTools = (
-    <div className="mt-2 flex flex-wrap gap-2 text-xs">
-      <span>WS: {WS_DEBUG_URL}</span>
-      <span>Status: {status}</span>
-    </div>
-  );
-
-  if (safeMode)
-    return (
-      <div className="min-h-screen bg-zinc-900 p-6 text-white">
-        {hud}
-        <h2 className="text-xl font-semibold">Room {code} (safe mode)</h2>
-        {safeTools}
-        <div className="mt-2">Player: <span className="font-semibold">{name}</span></div>
-        <div className="mt-4 flex gap-2">
-          <button onClick={draw} disabled={playDisabled} className="rounded bg-emerald-600 px-3 py-2 disabled:opacity-50">
-            {playDisabled ? "..." : "Play (draw)"}
-          </button>
-          <button
-            onClick={() => guess("before")}
-            disabled={guessLocked}
-            className="rounded bg-blue-600 px-3 py-2 disabled:opacity-50"
-          >
-            Before
-          </button>
-          <button
-            onClick={() => guess("after")}
-            disabled={guessLocked}
-            className="rounded bg-purple-600 px-3 py-2 disabled:opacity-50"
-          >
-            After
-          </button>
-          <button onClick={forcePlayTest} className="rounded bg-amber-600 px-3 py-2">Force Play Test</button>
-          <button onClick={refreshDebugStats} className="rounded bg-slate-600 px-3 py-2">Fetch Stats</button>
-        </div>
-        <pre className="mt-4 max-h-64 overflow-auto rounded bg-zinc-800 p-3 text-xs">
-{JSON.stringify({ myTurn, playerCard, currentSong, wins }, null, 2)}
-        </pre>
-      </div>
-    );
-
   return (
-    <div className="min-h-screen bg-zinc-900 p-6 text-white">
-      {hud}
-      <h2 className="text-xl font-semibold">Room {code}</h2>
-      <div className="mt-1 text-xs opacity-70">Status: {status}</div>
-      <div className="text-xs opacity-70">WS: {WS_DEBUG_URL}</div>
-      <div className="mt-2">Player: <span className="font-semibold">{name}</span></div>
-      <div className="mt-2 flex flex-wrap gap-2 text-xs">
-        <span>Host: {hostId || "n/a"}</span>
-        <span>Device: {deviceId || "n/a"}</span>
-        <button onClick={forcePlayTest} className="rounded bg-amber-600 px-2 py-1 text-xs">Force Play Test</button>
-        <button onClick={refreshDebugStats} className="rounded bg-slate-600 px-2 py-1 text-xs">Fetch Stats</button>
-      </div>
-      <div className="mt-4 grid gap-6 md:grid-cols-2">
-        <div className="rounded bg-zinc-800 p-4">
-          <div className="text-sm opacity-70">Your card</div>
-          {playerCard ? (
-            <div className="mt-2 rounded border border-zinc-700 p-3">
-              <div className="text-lg font-semibold">{playerCard.name}</div>
-              <div className="opacity-80">{playerCard.artists}</div>
-              <div className="opacity-80">Year: {playerCard.year}</div>
-            </div>
-          ) : (
-            <div className="mt-2 text-sm opacity-70">Waiting for start...</div>
-          )}
-          <div className="mt-3 text-sm">Cards won: <span className="font-semibold">{wins[playerId] ?? 0}</span></div>
+    <div className="min-h-screen bg-zinc-950 text-white px-4 py-6">
+      <header className="mb-6 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-semibold">{mePlayer.name}</h2>
+            <p className="text-sm text-zinc-400">Player ID: {mePlayer.id}</p>
+          </div>
+          <div className="text-right text-sm text-zinc-400">
+            <div>Score: <span className="text-white font-semibold">{mePlayer.score}</span></div>
+            <div>Cards: <span className="text-white font-semibold">{mePlayer.timeline.length}</span></div>
+          </div>
         </div>
-        <div className="rounded bg-zinc-800 p-4">
-          <div className="mb-2 text-sm opacity-70">Central deck</div>
-          {myTurn ? (
-            <div>
-              {!currentSong ? (
-                <>
-                  <div className="mb-2 text-xs opacity-70">
-                    Device: {deviceId || "n/a"}
-                    <button onClick={activateDevice} className="ml-2 rounded bg-zinc-700 px-2 py-1">Activate</button>
-                  </div>
-                  <button onClick={draw} disabled={playDisabled} className="rounded bg-emerald-600 px-4 py-2 disabled:opacity-50">
-                    {playDisabled ? "..." : "Draw / Play"}
-                  </button>
-                </>
-              ) : (
-                <div>
-                  <div className="text-xs opacity-70">Playing via Spotify: {currentSong?.name} - {currentSong?.artists}</div>
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      onClick={() => guess("before")}
-                      disabled={guessLocked}
-                      className="rounded bg-blue-600 px-3 py-2 disabled:opacity-50"
-                    >
-                      Before
-                    </button>
-                    <button
-                      onClick={() => guess("after")}
-                      disabled={guessLocked}
-                      className="rounded bg-purple-600 px-3 py-2 disabled:opacity-50"
-                    >
-                      After
-                    </button>
-                  </div>
-                  <div className="mt-3">
-                    <button
-                      onClick={() => handleTurnPlay({ turnId: lastTurnIdRef.current || "", data: { song: currentSong } })}
-                      disabled={playButtonDisabled}
-                      className="rounded bg-emerald-700 px-3 py-2 text-sm disabled:opacity-50"
-                    >
-                      {playButtonDisabled ? "Play Locked" : "Play / queue_next"}
-                    </button>
-                    <div className="mt-1 text-xs text-amber-400">
-                      {playDisabledReasons.join(" | ") || "ready"}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-sm opacity-70">Wait for your turn...</div>
+        <div className="rounded bg-zinc-900/60 px-4 py-3 text-sm text-zinc-300">
+          <div>Phase: <span className="text-white font-semibold capitalize">{phaseLabel}</span></div>
+          <div>Status: <span className="text-white/90">{state.status || ""}</span></div>
+          <div className="mt-1 text-xs text-zinc-500">
+            ws:{" "}
+            <span className={wsStatus === "open" ? "text-emerald-400" : "text-yellow-400"}>{wsStatus}</span>{" "}
+            | turnId: {state.turnId ?? "-"} | current: {state.currentPlayerId ?? "-"} | ghostIndex: {state.ghostIndex}
+            {state.device ? ` | device: ${state.device.id}` : " | device: n/a"}
+          </div>
+        </div>
+      </header>
+
+      {winner ? (
+        <div className="mb-4 rounded border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-emerald-200">
+          🎉 Game finished! Winner: <span className="font-semibold">{winner}</span>
+        </div>
+      ) : null}
+
+      {!isMyTurn ? (
+        <div className="mb-6 rounded bg-zinc-900/70 px-4 py-8 text-center text-lg text-zinc-200">
+          Waiting… It’s {state.currentPlayerId ? state.players.find((p) => p.id === state.currentPlayerId)?.name ?? "another player" : "someone"}'s turn.
+        </div>
+      ) : state.turnPhase === "playing" ? (
+        <div className="mb-6 space-y-4 rounded bg-zinc-900/70 px-4 py-6">
+          <div className="text-sm text-zinc-400">Hidden card ready. Audio plays once you press Play.</div>
+          <button
+            onClick={handlePlay}
+            disabled={playDisabled}
+            className="w-full rounded bg-emerald-500 py-4 text-lg font-semibold text-black disabled:opacity-40"
+          >
+            {state.playInFlight ? "Loading…" : "Play Hidden Card"}
+          </button>
+          <div className="flex items-center justify-between text-xs text-zinc-500">
+            <span>Device: {deviceId ? deviceId : "not ready"}</span>
+            <button onClick={ensureActivation} className="rounded bg-zinc-800 px-2 py-1">Activate</button>
+          </div>
+        </div>
+      ) : state.turnPhase === "placing" ? (
+        <div className="mb-6 space-y-4 rounded bg-zinc-900/70 px-4 py-6">
+          <div className="text-sm text-zinc-400">Use ↑ / ↓ to position the hidden card, then confirm.</div>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={() => moveGhost(-1)}
+              disabled={placementDisabled}
+              className="h-14 w-20 rounded-full bg-zinc-800 text-2xl disabled:opacity-40"
+            >
+              ↑
+            </button>
+            <button
+              onClick={() => moveGhost(1)}
+              disabled={placementDisabled}
+              className="h-14 w-20 rounded-full bg-zinc-800 text-2xl disabled:opacity-40"
+            >
+              ↓
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={placementDisabled}
+              className="h-14 flex-1 rounded bg-emerald-500 text-lg font-semibold text-black disabled:opacity-40"
+            >
+              {state.confirmInFlight ? "Checking…" : "Confirm"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <section className="mb-6 space-y-3">
+        <div className="text-sm text-zinc-400">Your timeline (chronological)</div>
+        <div className="grid gap-2">
+          {ghostElements.length > 0 ? ghostElements : (
+            <div className="rounded bg-zinc-900/60 px-3 py-4 text-center text-zinc-400">No cards yet. Place the hidden card to start your timeline.</div>
           )}
         </div>
-      </div>
+      </section>
+
+      <section className="space-y-2">
+        <div className="text-sm text-zinc-400">Players</div>
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between rounded bg-zinc-900/70 px-3 py-2">
+            <div className="font-semibold text-white">{mePlayer.name} (you)</div>
+            <div className="text-sm text-zinc-400">Score {mePlayer.score} • Cards {mePlayer.timeline.length}</div>
+          </div>
+          {otherPlayers.map((p) => (
+            <div key={p.id} className="flex items-center justify-between rounded bg-zinc-900/40 px-3 py-2 text-sm">
+              <div className="text-white/90">{p.name}</div>
+              <div className="text-zinc-500">Score {p.score} • Cards {p.timeline.length}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <footer className="mt-8 space-y-3 text-xs text-zinc-500">
+        <div>Room: {state.roomCode || code}</div>
+        <div>Host: {state.hostId || "n/a"}</div>
+        <div>Last result: {state.lastResult ? `${state.lastResult.message} (${state.lastResult.turnId})` : "-"}</div>
+        <div className="pt-2">
+          <button
+            className="rounded bg-zinc-800 px-2 py-1"
+            onClick={async () => {
+              try {
+                await fetch(`${API_BASE}/api/turn/next`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "include",
+                  body: JSON.stringify({ roomCode: state.roomCode }),
+                });
+                dispatch({ type: "SET_STATUS", payload: { status: "Requested next turn (dev)." } });
+              } catch (err: any) {
+                dispatch({ type: "SET_STATUS", payload: { status: `next turn error: ${err?.message || err}` } });
+              }
+            }}
+          >
+            Dev: Next turn
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

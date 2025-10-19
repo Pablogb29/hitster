@@ -1,254 +1,500 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import QRCode from "qrcode";
-import { connectWS } from "../lib/ws";
+import { connectWS, type WSEvent } from "../lib/ws";
+import Tabletop from "../tabletop/Tabletop";
+import type { HiddenCardState, TabletopPlayer, TabletopRoom } from "../tabletop/types";
 
-type Player = { id:string; name:string; seat:number; score:number; is_host:boolean };
-type Room = {
-  code:string;
-  players:Player[];
-  state?: "lobby"|"playing"|"finished";
-  turnIndex?: number;
+type RoomSnapshot = TabletopRoom & {
+  deck?: (TabletopRoom["deck"] & {
+    discard: string[];
+  }) | undefined;
 };
 
+type HostState = {
+  room: RoomSnapshot | null;
+  status: string;
+  wsStatus: "idle" | "connecting" | "open" | "closed";
+};
+
+type HostAction =
+  | { type: "ROOM_INIT"; payload: RoomSnapshot }
+  | { type: "TURN_BEGIN"; payload: { turnId: string; currentPlayerId: string } }
+  | { type: "TURN_PLAY"; payload: { turnId: string; playerId: string; song: { trackId: string; uri: string; release: { date: string; precision: string } } } }
+  | { type: "TURN_PLACING"; payload: { turnId: string } }
+  | { type: "TURN_RESULT"; payload: { turnId: string; playerId: string; correct: boolean; placedTrack?: any; finalIndex?: number; newScore?: number } }
+  | { type: "GAME_FINISH"; payload: { winnerId: string } }
+  | { type: "SET_STATUS"; payload: string }
+  | { type: "WS_STATUS"; payload: HostState["wsStatus"] };
+
+const initialHostState: HostState = {
+  room: null,
+  status: "",
+  wsStatus: "idle",
+};
+
+const normalizeTrack = (track: any) => ({
+  trackId: track?.trackId ?? track?.id,
+  uri: track?.uri,
+  name: track?.name,
+  artist: track?.artist,
+  album: track?.album,
+  coverUrl: track?.coverUrl,
+  release: track?.release,
+});
+
+const normalizePlayer = (p: any): TabletopPlayer => ({
+  id: p.id,
+  name: p.name,
+  score: p.score ?? (p.timeline?.length ?? 0),
+  timeline: (p.timeline ?? []).map((card: any) => normalizeTrack(card)),
+});
+
+const normalizeRoom = (snapshot: RoomSnapshot): RoomSnapshot => {
+  const discard = [...(snapshot.deck?.discard ?? [])].filter((id): id is string => Boolean(id));
+  return {
+    ...snapshot,
+    players: snapshot.players.map(normalizePlayer),
+    turn: snapshot.turn
+      ? {
+          turnId: snapshot.turn.turnId,
+          currentPlayerId: snapshot.turn.currentPlayerId,
+          phase: snapshot.turn.phase,
+          drawn: snapshot.turn.drawn ? (normalizeTrack(snapshot.turn.drawn) as any) : null,
+        }
+      : null,
+    deck: {
+      playlistId: snapshot.deck?.playlistId ?? null,
+      used: [...(snapshot.deck?.used ?? [])],
+      discard,
+      remaining: snapshot.deck?.remaining ?? 0,
+    },
+  };
+};
+
+const hostReducer = (state: HostState, action: HostAction): HostState => {
+  switch (action.type) {
+    case "ROOM_INIT":
+      return {
+        ...state,
+        room: normalizeRoom(action.payload),
+        status: "Room synchronised",
+      };
+    case "TURN_BEGIN": {
+      if (!state.room) return state;
+      const room: RoomSnapshot = {
+        ...state.room,
+        status: "playing",
+        turn: {
+          turnId: action.payload.turnId,
+          currentPlayerId: action.payload.currentPlayerId,
+          phase: "playing",
+          drawn: null,
+        },
+      };
+      return { ...state, room, status: `Turn started for ${action.payload.currentPlayerId}` };
+    }
+    case "TURN_PLAY": {
+      if (!state.room || !state.room.turn) return state;
+      if (state.room.turn.turnId !== action.payload.turnId) return state;
+      const room: RoomSnapshot = {
+        ...state.room,
+        status: "placing",
+        turn: {
+          ...state.room.turn,
+          phase: "placing",
+          drawn: normalizeTrack(action.payload.song) as any,
+        },
+      };
+      return { ...state, room };
+    }
+    case "TURN_PLACING": {
+      if (!state.room || !state.room.turn || state.room.turn.turnId !== action.payload.turnId) return state;
+      const room: RoomSnapshot = {
+        ...state.room,
+        status: "placing",
+        turn: { ...state.room.turn, phase: "placing" },
+      };
+      return { ...state, room };
+    }
+    case "TURN_RESULT": {
+      if (!state.room || !state.room.turn || state.room.turn.turnId !== action.payload.turnId) return state;
+      const players = state.room.players.map((player) => {
+        if (player.id !== action.payload.playerId) return player;
+        if (action.payload.correct && action.payload.placedTrack && typeof action.payload.finalIndex === "number") {
+          const timeline = [...player.timeline];
+          const index = Math.max(0, Math.min(action.payload.finalIndex, timeline.length));
+          timeline.splice(index, 0, normalizeTrack(action.payload.placedTrack));
+          return {
+            ...player,
+            score: action.payload.newScore ?? timeline.length,
+            timeline,
+          };
+        }
+        return {
+          ...player,
+          score: action.payload.newScore ?? player.score,
+        };
+      });
+      const drawnTrackId = state.room.turn.drawn?.trackId;
+      const baseDiscard = [...(state.room.deck?.discard ?? [])];
+      const discard = action.payload.correct
+        ? baseDiscard
+        : [...baseDiscard, drawnTrackId].filter((id): id is string => typeof id === "string" && id.length > 0);
+      const room: RoomSnapshot = {
+        ...state.room,
+        status: "result",
+        players,
+        deck: { ...state.room.deck!, discard },
+        turn: {
+          ...state.room.turn,
+          phase: "result",
+          drawn: null,
+        },
+      };
+      return {
+        ...state,
+        room,
+        status: action.payload.correct ? "Correct placement" : "Incorrect placement",
+      };
+    }
+    case "GAME_FINISH": {
+      if (!state.room) return state;
+      const room: RoomSnapshot = {
+        ...state.room,
+        status: "finished",
+        winnerId: action.payload.winnerId,
+      };
+      return { ...state, room, status: `Winner: ${action.payload.winnerId}` };
+    }
+    case "SET_STATUS":
+      return { ...state, status: action.payload };
+    case "WS_STATUS":
+      return { ...state, wsStatus: action.payload };
+    default:
+      return state;
+  }
+};
+
+function resolveBackendBase() {
+  if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
+    return "https://backend-production-f463.up.railway.app";
+  }
+  return "http://localhost:8000";
+}
+
+const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveBackendBase())
+  .replace(/\/+$/, "")
+  .replace(/\/api$/, "");
+
+type HiddenHook = [HiddenCardState | null, Dispatch<SetStateAction<HiddenCardState | null>>];
+
+function useHiddenCard(): HiddenHook {
+  const [value, setValue] = useState<HiddenCardState | null>(null);
+
+  useEffect(() => {
+    if (!value) return;
+    if (value.stage === "incoming") {
+      const id = window.setTimeout(() => {
+        setValue((prev) => (prev ? { ...prev, stage: "active" } : prev));
+      }, 60);
+      return () => window.clearTimeout(id);
+    }
+  }, [value]);
+
+  return [value, setValue];
+}
+
 export default function Host() {
-  const [room, setRoom] = useState<Room| null>(null);
-  const [qr, setQr] = useState<string>("");
-  const [ws, setWs] = useState<any>(null);
+  const [state, dispatch] = useReducer(hostReducer, initialHostState);
   const [hostId, setHostId] = useState<string>("");
+  const [qr, setQr] = useState<string>("");
+  const [playlistId, setPlaylistId] = useState<string>("");
+  const [tiePolicy, setTiePolicy] = useState<"strict" | "lenient">("lenient");
   const [health, setHealth] = useState<string>("");
   const [spotifyLinked, setSpotifyLinked] = useState<boolean>(false);
   const [playlists, setPlaylists] = useState<any[]>([]);
-  const [selectedPl, setSelectedPl] = useState<string>("");
-  const [wins, setWins] = useState<Record<string, number>>({});
-  const [currentTurn, setCurrentTurn] = useState<string>("");
-  const [lastResult, setLastResult] = useState<any>(null);
-  
-  function drawForCurrent() {
-    if (!ws || !room) return;
-    const pid = currentTurn || (room.turnIndex !== undefined ? room.players[room.turnIndex]?.id : "");
-    if (!pid) return;
-    ws.send("turn:draw", { playerId: pid });
-  }
-  function guessForCurrent(choice: 'before'|'after') {
-    if (!ws || !room) return;
-    const pid = currentTurn || (room.turnIndex !== undefined ? room.players[room.turnIndex]?.id : "");
-    if (!pid) return;
-    ws.send("turn:guess", { playerId: pid, choice });
-  }
-  const [gameError, setGameError] = useState<string>("");
-  function resolveDefaultBackendBase() {
-    if (typeof location !== "undefined" && location.host === "frontend-production-62902.up.railway.app") {
-      return "https://backend-production-f463.up.railway.app";
-    }
-    return "http://localhost:8000";
-  }
-  const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || resolveDefaultBackendBase())
-    .replace(/\/+$/, '')
-    .replace(/\/api$/, '');
+  const [hiddenCard, setHiddenCard] = useHiddenCard();
+  const connRef = useRef<ReturnType<typeof connectWS> | null>(null);
 
-  async function createRoom() {
-    try {
-      const reqUrl = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}`
-                            : `${API_BASE}/api/create-room`;
-      const res = await fetch(reqUrl, { mode: 'cors' as RequestMode });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      }
-      const r = await res.json();
-      setRoom({ code: r.code, players: [], state: "lobby", turnIndex: 0 });
-      setHostId(r.hostId);
-      const joinUrl = `${location.origin}/join?code=${r.code}`;
-      setQr(await QRCode.toDataURL(joinUrl));
 
-      const conn = connectWS(r.code, (e) => {
-        if (e.event === "room:state") setRoom(e.data);
-        if (e.event === "game:init") {
-          setRoom((prev:any)=> ({ ...(prev||{}), state: 'playing', players: e.data.players }));
-          setWins(e.data.wins || {});
-        }
-        if (e.event === "turn:begin") {
-          setCurrentTurn(e.data.playerId);
-          setRoom(prev => {
-            if (!prev) return prev;
-            const idx = prev.players.findIndex(p => p.id === e.data.playerId);
-            return { ...prev, turnIndex: idx };
+
+  const connectToRoom = useCallback((code: string, hid: string) => {
+    dispatch({ type: "WS_STATUS", payload: "connecting" });
+    const conn = connectWS(code, (evt: WSEvent) => {
+      switch (evt.event) {
+        case "room:init":
+          dispatch({ type: "ROOM_INIT", payload: evt.data as RoomSnapshot });
+          break;
+        case "turn:begin":
+          setHiddenCard(null);
+          dispatch({ type: "TURN_BEGIN", payload: evt.data });
+          break;
+        case "turn:play":
+          dispatch({ type: "TURN_PLAY", payload: evt.data });
+          setHiddenCard({
+            key: `${evt.data.turnId}-${evt.data.song.trackId}`,
+            playerId: evt.data.playerId,
+            track: {
+              trackId: evt.data.song.trackId,
+              uri: evt.data.song.uri,
+              release: evt.data.song.release,
+            },
+            stage: "incoming",
           });
-          setLastResult(null);
-        }
-        if (e.event === "turn:result") {
-          setWins(e.data.wins || {});
-          setLastResult(e.data);
-        }
-        if (e.event === "game:finished") {
-          setRoom(prev => prev ? { ...prev, state: 'finished' } : prev);
-        }
-        if (e.event === "game:error") {
-          const msg = e.data?.message || "Unable to start game. Check playlist has tracks with preview.";
-          setGameError(msg);
-        }
-      });
-      setWs(conn);
-      // Backend expects snake_case field name `is_host`
-      conn.send("join", { id: r.hostId, name: "HOST", is_host: true });
-      // check spotify status in case user just linked
-      try {
-        const st = await fetch(`${API_BASE}/api/spotify/status?hostId=${r.hostId}`).then(r=>r.json());
-        setSpotifyLinked(!!st?.linked);
-        if (st?.linked) {
-          const pls = await fetch(`${API_BASE}/api/spotify/playlists?hostId=${r.hostId}`).then(r=>r.json());
-          setPlaylists(pls?.items || []);
-        }
-      } catch {}
+          break;
+        case "turn:placing":
+          dispatch({ type: "TURN_PLACING", payload: evt.data });
+          break;
+        case "turn:result":
+          dispatch({ type: "TURN_RESULT", payload: evt.data });
+          setHiddenCard((prev) => {
+            if (!prev || prev.playerId !== evt.data.playerId) return null;
+            return { ...prev, stage: evt.data.correct ? "revealing" : "failed" };
+          });
+          setTimeout(() => setHiddenCard(null), evt.data.correct ? 450 : 450);
+          break;
+        case "game:finish":
+          dispatch({ type: "GAME_FINISH", payload: evt.data });
+          break;
+        default:
+          break;
+      }
+    });
+    conn.ws.addEventListener("open", () => dispatch({ type: "WS_STATUS", payload: "open" }));
+    conn.ws.addEventListener("close", () => dispatch({ type: "WS_STATUS", payload: "closed" }));
+    conn.send("join", { id: hid, name: "HOST", is_host: true });
+    connRef.current = conn;
+  }, [setHiddenCard]);
+  const loadSpotifyState = useCallback(async (hid: string) => {
+    try {
+      const status = await fetch(`${API_BASE}/api/spotify/status?hostId=${hid}`).then((r) => r.json());
+      setSpotifyLinked(!!status?.linked);
+      if (status?.linked) {
+        const pls = await fetch(`${API_BASE}/api/spotify/playlists?hostId=${hid}`).then((r) => r.json());
+        setPlaylists(pls?.items || []);
+      }
     } catch (err) {
-      console.error("Failed to create room:", err);
-      alert("Failed to create room. Check BACKEND URL configuration.");
+      console.warn("spotify status", err);
     }
-  }
-
-  // On mount, pick up hostId from URL (after Spotify callback)
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const hid = params.get('hostId');
-      const spok = params.get('spotify');
-      if (hid) {
-        setHostId(hid);
-      }
-      if (hid && spok === 'ok') {
-        // Check linked status and preload playlists
-        fetch(`${API_BASE}/api/spotify/status?hostId=${hid}`).then(r=>r.json()).then(st => {
-          setSpotifyLinked(!!st?.linked);
-          if (st?.linked) {
-            fetch(`${API_BASE}/api/spotify/playlists?hostId=${hid}`).then(r=>r.json()).then(pls => {
-              setPlaylists(pls?.items || []);
-            }).catch(()=>{});
-          }
-        }).catch(()=>{});
-      }
-    } catch {}
   }, []);
-
-  async function testBackend() {
-    setHealth("testing...");
+  const createRoom = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/health`, { mode: 'cors' as RequestMode });
+      if (connRef.current?.ws) {
+        connRef.current.ws.close();
+      }
+      const reqUrl = hostId ? `${API_BASE}/api/create-room?hostId=${encodeURIComponent(hostId)}` : `${API_BASE}/api/create-room`;
+      const res = await fetch(reqUrl, { mode: "cors" as RequestMode });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setHostId(data.hostId);
+      const joinUrl = `${window.location.origin}/join?code=${data.code}`;
+      const qrData = await QRCode.toDataURL(joinUrl);
+      setQr(qrData);
+      connectToRoom(data.code, data.hostId);
+      loadSpotifyState(data.hostId);
+      dispatch({ type: "SET_STATUS", payload: `Room ${data.code} created` });
+    } catch (err: any) {
+      console.error("create room", err);
+      dispatch({ type: "SET_STATUS", payload: `Create failed: ${err?.message || err}` });
+    }
+  }, [hostId, connectToRoom, loadSpotifyState]);
+
+
+  const testBackend = useCallback(async () => {
+    setHealth("Testing...");
+    try {
+      const res = await fetch(`${API_BASE}/api/health`, { mode: "cors" as RequestMode });
       const data = await res.json();
       setHealth(`ok: ${res.status} ${JSON.stringify(data)}`);
-    } catch (e: any) {
-      console.error("Health check failed", e);
-      setHealth(`error: ${e?.message || e}`);
+    } catch (err: any) {
+      setHealth(`error: ${err?.message || err}`);
     }
-  }
+  }, []);
 
-  function connectSpotify() {
+
+
+  const connectSpotify = useCallback(async () => {
     if (!hostId) return;
-    // Step 1: ask backend for authorize URL (so we keep client_secret safe)
-    fetch(`${API_BASE}/api/spotify/login?hostId=${hostId}`).then(r=>r.json()).then(data => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/spotify/login?hostId=${hostId}`);
+      const data = await resp.json();
       if (data?.authorize_url) {
-        window.location.href = data.authorize_url as string;
-      } else {
-        alert("Spotify is not configured on backend.");
+        window.location.href = data.authorize_url;
       }
-    }).catch(() => alert("Failed to start Spotify login."));
-  }
+    } catch (err) {
+      console.error("spotify login", err);
+    }
+  }, [hostId, connectToRoom, loadSpotifyState]);
 
-  function startGame() {
-    if (!ws || !room) return;
-    ws.send("start", { hostId, playlistId: selectedPl });
-  }
+  const startGame = useCallback(() => {
+    if (!connRef.current || !state.room) return;
+    connRef.current.send("start", {
+      hostId,
+      playlistId,
+      playlistName: "",
+      tiePolicy,
+    });
+    dispatch({ type: "SET_STATUS", payload: "Start requested" });
+  }, [state.room, hostId, playlistId, tiePolicy]);
 
-  useEffect(() => { /* crear sala manualmente con botón */ }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const hid = params.get("hostId");
+    const spotifyOk = params.get("spotify");
+    if (hid) {
+      setHostId(hid);
+      loadSpotifyState(hid);
+    }
+    if (hid && spotifyOk === "ok") {
+      loadSpotifyState(hid);
+    }
+  }, [loadSpotifyState]);
+
+  useEffect(() => {
+    return () => {
+      if (connRef.current?.ws) {
+        connRef.current.ws.close();
+      }
+    };
+  }, []);
+
+  const discardCount = state.room?.deck?.discard?.length ?? 0;
+  const activePlayer = useMemo(() => {
+    const id = state.room?.turn?.currentPlayerId;
+    if (!id) return null;
+    return state.room?.players.find((p) => p.id === id) ?? null;
+  }, [state.room]);
 
   return (
-    <div className="min-h-screen bg-zinc-900 text-white p-6 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold">HITSTER — Host</h1>
-
-      {!room ? (
-        <>
-          <button onClick={createRoom} className="mt-6 px-6 py-3 bg-emerald-600 rounded">
+    <div className="min-h-screen bg-slate-950 text-white">
+      <header className="grid grid-cols-3 items-start gap-6 px-8 py-6">
+        <div className="space-y-2">
+          <h1 className="text-3xl font-bold">HITSTER Tabletop — Host</h1>
+          <p className="text-sm text-slate-400">API: {API_BASE}</p>
+          <p className="text-sm text-emerald-300">Status: {state.status}</p>
+        </div>
+        <div className="space-y-2">
+          <button
+            onClick={createRoom}
+            className="w-full rounded bg-emerald-500 py-3 text-lg font-semibold text-black"
+          >
             Create Room
           </button>
-          <div className="mt-2 text-xs text-zinc-400">API: {API_BASE}</div>
-          <div className="mt-2">
-            <button onClick={testBackend} className="px-3 py-1 text-xs bg-zinc-700 rounded">Test Backend</button>
-            {health && <div className="mt-1 text-xs">Health: {health}</div>}
-          </div>
-        </>
-      ) : (
-        <div className="mt-6 grid md:grid-cols-2 gap-6">
-          <div className="p-4 rounded bg-zinc-800">
-            <div className="text-sm opacity-80">Código</div>
-            <div className="text-3xl font-mono">{room.code}</div>
-            {qr && <img src={qr} alt="QR" className="mt-4 w-40 h-40 bg-white p-2 rounded" />}
+          <button
+            onClick={testBackend}
+            className="w-full rounded bg-slate-800 py-2 text-sm"
+          >
+            Test Backend
+          </button>
+          {health && <p className="text-xs text-slate-400">{health}</p>}
+        </div>
+        <div className="space-y-2 text-sm text-slate-300">
+          <div>WS: <span className={state.wsStatus === "open" ? "text-emerald-300" : "text-yellow-300"}>{state.wsStatus}</span></div>
+          <div>Room: {state.room?.code ?? "-"}</div>
+          <div>Active: {activePlayer?.name ?? "-"}</div>
+          <div>Winner: {state.room?.winnerId ?? "-"}</div>
+        </div>
+      </header>
 
+      <main className="flex h-[65vh] items-stretch justify-center px-8">
+        <div className="relative w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/80">
+          <Tabletop
+            room={state.room}
+            hiddenCard={hiddenCard}
+            statusMessage={activePlayer ? `${activePlayer.name}'s turn` : ""}
+            discardCount={discardCount}
+            debug={true}
+          />
+        </div>
+      </main>
+
+      <section className="mt-6 grid grid-cols-3 gap-6 px-8 pb-8 text-sm">
+        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Room Sharing</h2>
+          {state.room?.code ? (
+            <>
+              <div className="text-3xl font-mono text-emerald-400">{state.room.code}</div>
+              {qr ? <img src={qr} alt="QR" className="h-32 w-32 rounded bg-white p-2" /> : null}
+            </>
+          ) : (
+            <p className="text-slate-400">Create a room to generate a join QR.</p>
+          )}
+        </div>
+        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Spotify</h2>
+          <div className="flex items-center justify-between text-sm">
+            <span>Linked</span>
+            <span className={spotifyLinked ? "text-emerald-300" : "text-red-300"}>
+              {spotifyLinked ? "yes" : "no"}
+            </span>
+          </div>
+          {!spotifyLinked ? (
             <button
-              onClick={startGame}
-              disabled={room.state === "playing" || (room.players?.length ?? 0) < 2}
-              className="mt-4 px-4 py-2 bg-blue-600 rounded disabled:opacity-50"
+              onClick={connectSpotify}
+              className="w-full rounded bg-emerald-500 py-2 text-black"
             >
-              Start Game
+              Connect Spotify
             </button>
-            {room.state === 'playing' && (
-              <div className="mt-3 flex gap-2">
-                <button onClick={drawForCurrent} className="px-3 py-2 bg-emerald-700 rounded text-sm">Debug: Draw</button>
-                <button onClick={()=>guessForCurrent('before')} className="px-3 py-2 bg-zinc-700 rounded text-sm">Debug: Before</button>
-                <button onClick={()=>guessForCurrent('after')} className="px-3 py-2 bg-zinc-700 rounded text-sm">Debug: After</button>
-              </div>
-            )}
-            {gameError && (
-              <div className="mt-2 text-sm text-red-400">{gameError}</div>
-            )}
-
-            <div className="mt-4 border-t border-zinc-700 pt-3">
-              <div className="flex items-center justify-between">
-                <div className="font-semibold">Spotify</div>
-                {!spotifyLinked && (
-                  <button onClick={connectSpotify} className="px-3 py-1 text-xs bg-emerald-600 rounded">Connect</button>
-                )}
-              </div>
-              {spotifyLinked ? (
-                <div className="mt-2">
-                  <label className="text-sm">Select playlist</label>
-                  <select value={selectedPl} onChange={e=>setSelectedPl(e.target.value)} className="mt-1 w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2">
-                    <option value="">Hitster (default)</option>
-                    {playlists.map((p:any)=> (
-                      <option key={p.id} value={p.id}>{p.name} ({p.tracks?.total ?? 0})</option>
-                    ))}
-                  </select>
-                  <div className="text-xs opacity-70 mt-1">Full-track playback via Spotify Web Playback SDK.</div>
-                </div>
-              ) : (
-                <div className="mt-2 text-xs opacity-75">Connect to list your playlists.</div>
-              )}
+          ) : null}
+          {spotifyLinked ? (
+            <div className="space-y-2">
+              <label className="text-xs text-slate-400">Playlist</label>
+              <select
+                value={playlistId}
+                onChange={(e) => setPlaylistId(e.target.value)}
+                className="w-full rounded bg-slate-800 px-3 py-2"
+              >
+                <option value="">Default (Hitster)</option>
+                {playlists.map((p: any) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.tracks?.total ?? 0})
+                  </option>
+                ))}
+              </select>
             </div>
-
-            {room?.state === "playing" && room?.turnIndex !== undefined && (
-              <div className="mt-3 px-3 py-2 bg-emerald-700/40 rounded">
-                Turno de: <span className="font-semibold">
-                  {room.players[room.turnIndex]?.name}
-                </span>
-              </div>
-            )}
+          ) : null}
+          <div className="space-y-2">
+            <label className="text-xs text-slate-400">Tie Policy</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setTiePolicy("strict")}
+                className={`flex-1 rounded px-3 py-2 ${tiePolicy === "strict" ? "bg-emerald-500 text-black" : "bg-slate-800"}`}
+              >
+                Strict
+              </button>
+              <button
+                onClick={() => setTiePolicy("lenient")}
+                className={`flex-1 rounded px-3 py-2 ${tiePolicy === "lenient" ? "bg-emerald-500 text-black" : "bg-slate-800"}`}
+              >
+                Lenient
+              </button>
+            </div>
           </div>
-
-          <div className="p-4 rounded bg-zinc-800">
-            <div className="font-semibold mb-2">Jugadores</div>
-            <ul className="space-y-2">
-              {room.players?.map(p => (
-                <li key={p.id} className="flex justify-between border border-zinc-700 rounded px-3 py-2">
-                  <span>{p.name}{p.is_host ? " (host)" : ""}</span>
-                  <span>🏆 {wins[p.id] ?? 0}{currentTurn===p.id ? ' • turn' : ''}</span>
-                </li>
-              ))}
-            </ul>
-            {lastResult && (
-              <div className="mt-3 px-3 py-2 bg-zinc-700/30 rounded text-sm">
-                Resultado: {lastResult.correct ? '✅ Correcto' : '❌ Incorrecto'} — {lastResult.song?.name} ({lastResult.song?.year}) · {lastResult.song?.artists}
+          <button
+            onClick={startGame}
+            className="w-full rounded bg-blue-500 py-2 text-black disabled:opacity-40"
+            disabled={!state.room || state.room.players.length < 2}
+          >
+            Start Game
+          </button>
+        </div>
+        <div className="space-y-4 rounded-2xl bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Players</h2>
+          <div className="space-y-2">
+            {state.room?.players.map((p) => (
+              <div key={p.id} className="flex items-center justify-between rounded bg-slate-800/60 px-3 py-2">
+                <div>
+                  <div className="font-semibold text-slate-100">{p.name}</div>
+                  <div className="text-xs text-slate-400">Cards {p.timeline.length}</div>
+                </div>
+                <div className="text-sm text-emerald-300">★ {p.score}</div>
               </div>
-            )}
+            ))}
+            {!state.room?.players?.length ? <div className="text-slate-500">Waiting for players…</div> : null}
           </div>
         </div>
-      )}
+      </section>
     </div>
   );
 }
