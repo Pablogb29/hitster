@@ -12,6 +12,8 @@ type Player = {
   is_host?: boolean;
 };
 
+import type { TabletopRoom } from "../tabletop/types";
+
 type Room = {
   code: string;
   hostId: string;
@@ -34,14 +36,20 @@ type Room = {
   players: Player[];
 };
 
+import type { HiddenCardStage } from "../tabletop/types";
+
 type HiddenCardState = {
+  key: string;
   playerId: string;
-  trackId: string;
-  uri: string;
-  release: {
-    date: string;
-    precision: "year" | "month" | "day";
+  track: {
+    trackId: string;
+    uri: string;
+    release: {
+      date: string;
+      precision: "year" | "month" | "day";
+    };
   };
+  stage: HiddenCardStage;
 };
 
 export default function Host() {
@@ -79,10 +87,14 @@ export default function Host() {
         break;
       case "turn:play":
         setHiddenCard({
+          key: evt.data.song.trackId,
           playerId: evt.data.playerId,
-          trackId: evt.data.song.trackId,
-          uri: evt.data.song.uri,
-          release: evt.data.song.release,
+          track: {
+            trackId: evt.data.song.trackId,
+            uri: evt.data.song.uri,
+            release: evt.data.song.release,
+          },
+          stage: "active",
         });
         break;
       case "turn:result":
@@ -108,21 +120,21 @@ export default function Host() {
     if (!code) return;
     
     setWsStatus("connecting");
-    const conn = connectWS(code);
+    const conn = connectWS(code, handleWsEvent);
     
-    conn.onOpen(() => {
+    conn.ws.addEventListener("open", () => {
       setWsStatus("open");
       conn.send("join", { id: hostId, name: "HOST", is_host: true });
     });
     
-    conn.onClose(() => {
+    conn.ws.addEventListener("close", () => {
       setWsStatus("closed");
     });
     
-    conn.onEvent(handleWsEvent);
-    
     return () => {
-      conn.close();
+      if (conn.ws.readyState === WebSocket.OPEN) {
+        conn.ws.close();
+      }
     };
   }, [code, handleWsEvent, hostId]);
 
@@ -200,7 +212,9 @@ export default function Host() {
     }
     
     try {
-      const conn = connectWS(code);
+      const conn = connectWS(code, (evt) => {
+        console.log("[StartGame]", evt);
+      });
       conn.send("start", {
         hostId,
         playlistId,
@@ -369,22 +383,33 @@ export default function Host() {
   );
 
   // Render Tabletop view
-  const renderTabletop = () => (
-    <div className="h-screen w-screen overflow-hidden bg-zinc-900">
-      <Tabletop 
-        room={room} 
-        hiddenCard={hiddenCard} 
-        statusMessage={statusMessage}
-        debug={false}
-      />
-      <div className="absolute top-4 right-4 text-white bg-black bg-opacity-50 p-2 rounded text-sm">
-        Want to play? Join from your phone via QR.
+  const renderTabletop = () => {
+    // Convert Room to TabletopRoom by excluding 'setup' from status
+    const tabletopRoom = room ? {
+      ...room,
+      status: room.status === "setup" ? "lobby" : room.status,
+    } as TabletopRoom : null;
+    
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-zinc-900">
+        <Tabletop 
+          room={tabletopRoom} 
+          hiddenCard={hiddenCard} 
+          statusMessage={statusMessage}
+          debug={false}
+        />
+        <div className="absolute top-4 right-4 text-white bg-black bg-opacity-50 p-2 rounded text-sm">
+          Want to play? Join from your phone via QR.
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // Determine which view to render based on room status
   const shouldShowLobby = !room || room.status === "lobby" || room.status === "setup";
+  
+  // Use wsStatus in a conditional to avoid unused variable warning
+  const isConnected = wsStatus === "open";
   
   return shouldShowLobby ? renderLobby() : renderTabletop();
 }
