@@ -23,6 +23,9 @@ export default function Join() {
   const [deviceId, setDeviceId] = useState<string>("");
   const [, setPlayerReady] = useState(false);
   const [status, setStatus] = useState<string>("idle");
+  const [phase, setPhase] = useState<'playing'|'guess'|'result'|'idle'>("idle");
+  const phaseRef = useRef<'playing'|'guess'|'result'|'idle'>("idle");
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || (location.protocol + '//' + location.host))
     .replace(/\/+$/, '')
@@ -42,18 +45,21 @@ export default function Join() {
     setStatus("connecting ws...");
     const ws = connectWS(code, (e) => {
       try {
-        setStatus(`event: ${e.event}`);
+        console.log(`[ws] event=${e.event} phase=${phaseRef.current}`);
+        setStatus(`event: ${e.event} (phase=${phaseRef.current})`);
         if (e.event === "room:state") { setRoom(e.data); setHostId(e.data?.hostId || ""); }
         else if (e.event === "game:init") {
           const data = e.data || {};
           setRoom({ code, players: data.players || [], state: "playing" });
           setPlayerCard((data.playerCards || {})[playerId] || null);
           setWins(data.wins || {});
+          setPhase('idle');
         }
         else if (e.event === "turn:begin") {
           const data = e.data || {};
           setMyTurn(data.playerId === playerId);
           setCurrentSong(null);
+          setPhase('idle');
         }
         else if (e.event === "turn:play") {
           const data = e.data || {};
@@ -64,6 +70,9 @@ export default function Join() {
           if (data.turnId) lastTurnIdRef.current = data.turnId;
           if (data.playerId === playerId) {
             setCurrentSong(data.song || null);
+            setPhase('playing');
+            handleTurnPlay({ turnId: data.turnId, data: { song: data.song } });
+            return;
             // Queue-and-next with fallback to play_track
             const uri = data.song?.uri;
             const id = data.song?.id as string | undefined;
@@ -99,7 +108,7 @@ export default function Join() {
           setCurrentSong(data.song || null);
           // Ensure playback is stopped when result is shown
           if (hostId) {
-            fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })}).catch(()=>{});
+            fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId, reason: 'result' })}).catch(()=>{});
           }
         }
         else if (e.event === "game:finished") {
@@ -225,11 +234,63 @@ export default function Join() {
     if (!connRef.current) return;
     try {
       if (hostId) {
-        await fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId })});
+        setPhase('guess');
+        await fetch(`${API_BASE}/api/spotify/pause`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hostId, device_id: deviceId, reason: 'guess' })});
       }
     } catch {}
     connRef.current.send("turn:guess", { playerId, choice });
   };
+
+  async function handleTurnPlay(evt: { turnId: string; data: { song: any } }) {
+    if (evt.turnId && evt.turnId === lastTurnIdRef.current) return; // already handled
+    if (evt.turnId) lastTurnIdRef.current = evt.turnId;
+    return onPlayOnce(evt.data.song, evt.turnId);
+  }
+
+  async function onPlayOnce(song: any, turnId?: string) {
+    if (playLockRef.current) return;
+    playLockRef.current = true;
+    setPlayDisabled(true);
+    try {
+      if (!deviceId || !hostId) return;
+      const uri = song?.uri;
+      const id = song?.id as string | undefined;
+      const r = await fetch(`${API_BASE}/api/spotify/queue_next`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ hostId, device_id: deviceId, uri, id, turn_id: turnId || null }),
+      });
+      if (!r.ok) {
+        await fetch(`${API_BASE}/api/spotify/play_track`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ hostId, device_id: deviceId, uri, id }),
+        });
+        setStatus('play_track fallback OK');
+        return;
+      }
+      setStatus('queue_next OK');
+      setTimeout(async () => {
+        try {
+          const s = await fetch(`${API_BASE}/api/spotify/state?hostId=${hostId}`, { credentials: 'include' }).then(r => r.json());
+          if (s && s.device?.is_active && s.is_playing === false) {
+            await fetch(`${API_BASE}/api/spotify/resume`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ hostId, device_id: deviceId }),
+            });
+            setStatus('resume after queue_next');
+          }
+        } catch {}
+      }, 700);
+    } finally {
+      playLockRef.current = false;
+      setPlayDisabled(false);
+    }
+  }
 
   
 

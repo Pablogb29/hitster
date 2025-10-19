@@ -4,8 +4,11 @@ from pydantic import BaseModel, Field
 import random, string, json, os, re, time
 from urllib.parse import urlencode
 import httpx
+import logging
 
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("hitster")
 
 # CORS configuration: allow frontend origin(s) from env for Railway
 # FRONTEND_ORIGINS may be:
@@ -219,14 +222,7 @@ async def ws_room(ws: WebSocket, code: str):
                 turn_id = code4() + code4()
                 room.currentTurnId = turn_id
                 await broadcast(code, "turn:play", {"playerId": pid, "song": payload, "turnId": turn_id})
-                # If the client provided a device id, attempt to start playback server-side
-                try:
-                    if device_id and card.get("uri"):
-                        status, _ = await _queue_next_core(room.hostId, device_id, card["uri"])
-                        if status and status >= 400:
-                            await broadcast(code, "game:error", {"message": f"queue_next failed: HTTP {status}"})
-                except Exception as e:
-                    await broadcast(code, "game:error", {"message": f"queue_next exception: {e}"})
+                # Playback is now initiated client-side on turn:play with queue_next
 
             elif event == "turn:guess":
                 # Validate and score
@@ -500,6 +496,8 @@ async def spotify_transfer(payload: dict):
 async def spotify_pause(payload: dict):
     host_id = payload.get("hostId")
     device_id = payload.get("device_id")
+    reason = payload.get("reason", "unspecified")
+    logger.info(f"[pause] host={host_id} device={device_id} reason={reason}")
     if not host_id:
         return Response("Missing hostId", status_code=400)
     token = await _get_valid_token(host_id)
@@ -512,6 +510,34 @@ async def spotify_pause(payload: dict):
             headers=headers,
         )
     return Response(r.text, status_code=r.status_code)
+
+@app.post("/api/spotify/resume")
+async def spotify_resume(payload: dict):
+    host_id = payload.get("hostId")
+    device_id = payload.get("device_id")
+    if not host_id or not device_id:
+        return Response("Missing params", status_code=400)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Ensure device is the active player without auto-playing prior context
+        try:
+            tr = await client.put(
+                "https://api.spotify.com/v1/me/player",
+                headers=headers,
+                json={"device_ids": [device_id], "play": False},
+            )
+            logger.info(f"[resume] transfer code={tr.status_code}")
+        except Exception:
+            pass
+        # Resume current playback context (no URIs)
+        r = await client.put(
+            f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
+            headers=headers,
+        )
+    return Response(r.text, status_code=204 if r.status_code < 400 else r.status_code)
 
 async def _queue_next_core(host_id: str, device_id: str, uri: str) -> tuple[int, str]:
     token = await _get_valid_token(host_id)
@@ -553,13 +579,26 @@ async def _queue_next_core(host_id: str, device_id: str, uri: str) -> tuple[int,
             return (queue_code, qr.text)
         return (next_code, nr.text)
 
+# Reentrancy guard for queue_next (per host/turn or host/uri) within a short window
+_queue_hits: dict[str, float] = {}
+_QUEUE_WINDOW_SEC = 1.0
+
 @app.post("/api/spotify/queue_next")
 async def spotify_queue_next(payload: dict):
     host_id = payload.get("hostId")
     device_id = payload.get("device_id")
     uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get('id') else None)
+    turn_id = payload.get("turn_id") or payload.get("turnId")
     if not host_id or not device_id or not uri:
         return Response("Missing params", status_code=400)
+    # Reentrancy guard key: prefer host+turn, fallback to host+uri
+    key = f"{host_id}:::{turn_id}" if turn_id else f"{host_id}:::{uri}"
+    now = time.time()
+    last = _queue_hits.get(key, 0)
+    if now - last < _QUEUE_WINDOW_SEC:
+        logger.info(f"[queue_next] dedup host={host_id} turn={turn_id or 'n/a'} uri={uri}")
+        return Response(status_code=202)
+    _queue_hits[key] = now
     status, text = await _queue_next_core(host_id, device_id, uri)
     return Response(text, status_code=status if status else 204)
 
