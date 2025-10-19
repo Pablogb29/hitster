@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+import asyncio
 import random, string, json, os, re, time
 from collections import defaultdict
 from urllib.parse import urlencode
@@ -104,6 +105,20 @@ def _record_turn_play(host_id: str | None, turn_id: str | None):
     if turn_id:
         entry["last_turn_id"] = turn_id
     entry["last_turn_play_ts"] = time.time()
+
+async def _fetch_player_state(host_id: str) -> dict | None:
+    token = await _get_valid_token(host_id)
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get("https://api.spotify.com/v1/me/player", headers=headers)
+    if resp.status_code >= 400:
+        return None
+    try:
+        return resp.json()
+    except json.JSONDecodeError:
+        return None
 
 def code4() -> str:
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -643,7 +658,31 @@ async def spotify_queue_next(payload: dict):
     entry = _stats_for_host(host_id)
     entry["queue_next_count"] += 1
     entry["last_queue_next_ts"] = now
-    return Response(text, status_code=status if status else 204)
+
+    if status and status >= 400:
+        return Response(text, status_code=status)
+
+    observed_uri = None
+    observed_is_playing = None
+    try:
+        await asyncio.sleep(0.3)
+    except asyncio.CancelledError:
+        pass
+    state = await _fetch_player_state(host_id)
+    if state:
+        item = state.get("item") or {}
+        raw_uri = item.get("uri") or item.get("id")
+        if raw_uri:
+            observed_uri = raw_uri if str(raw_uri).startswith("spotify:") else f"spotify:track:{raw_uri}"
+        observed_is_playing = state.get("is_playing")
+    logger.info(
+        f"[queue_next] observation target={uri} observed={observed_uri} playing={observed_is_playing}"
+    )
+    return {
+        "target_uri": uri,
+        "observed_uri": observed_uri,
+        "is_playing": observed_is_playing,
+    }
 
 @app.post("/api/spotify/next")
 async def spotify_next(payload: dict):
