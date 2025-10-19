@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import random, string, json, os, re, time
+from collections import defaultdict
 from urllib.parse import urlencode
 import httpx
 import logging
@@ -72,6 +73,37 @@ class Room(BaseModel):
 
 rooms: dict[str, Room] = {}
 clients: dict[str, list[WebSocket]] = {}
+
+# Debug stats per host
+debug_stats: dict[str, dict] = {}
+
+def _stats_for_host(host_id: str) -> dict:
+    entry = debug_stats.get(host_id)
+    if not entry:
+        entry = {
+            "queue_next_count": 0,
+            "pause_by_reason": defaultdict(int),
+            "last_phase": None,
+            "last_queue_next_ts": 0.0,
+            "last_turn_id": None,
+            "last_turn_play_ts": 0.0,
+        }
+        debug_stats[host_id] = entry
+    return entry
+
+def _set_phase(host_id: str | None, phase: str):
+    if not host_id:
+        return
+    entry = _stats_for_host(host_id)
+    entry["last_phase"] = phase
+
+def _record_turn_play(host_id: str | None, turn_id: str | None):
+    if not host_id:
+        return
+    entry = _stats_for_host(host_id)
+    if turn_id:
+        entry["last_turn_id"] = turn_id
+    entry["last_turn_play_ts"] = time.time()
 
 def code4() -> str:
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -186,6 +218,7 @@ async def ws_room(ws: WebSocket, code: str):
                     "remaining": len(room.deck),
                 })
                 first_id = room.players[room.turnIndex].id
+                _set_phase(room.hostId, "idle")
                 await broadcast(code, "turn:begin", {"playerId": first_id})
 
             elif event == "turn:draw":
@@ -221,6 +254,9 @@ async def ws_room(ws: WebSocket, code: str):
                 payload = {k: v for k, v in card.items() if k != "year"}
                 turn_id = code4() + code4()
                 room.currentTurnId = turn_id
+                _set_phase(room.hostId, "playing")
+                _record_turn_play(room.hostId, turn_id)
+                logger.info(f"[emit turn:play] host={room.hostId} player={pid} turnId={turn_id} song={card.get('id')}")
                 await broadcast(code, "turn:play", {"playerId": pid, "song": payload, "turnId": turn_id})
                 # Playback is now initiated client-side on turn:play with queue_next
 
@@ -250,6 +286,7 @@ async def ws_room(ws: WebSocket, code: str):
                     "song": song,
                     "wins": room.wins,
                 })
+                _set_phase(room.hostId, "result")
                 # Check win condition
                 if room.wins.get(pid, 0) >= 10:
                     room.state = "finished"
@@ -265,6 +302,7 @@ async def ws_room(ws: WebSocket, code: str):
                         break
                     room.turnIndex = (room.turnIndex + 1) % len(room.players)
                 next_id = room.players[room.turnIndex].id
+                _set_phase(room.hostId, "idle")
                 await broadcast(code, "turn:begin", {"playerId": next_id})
 
     except WebSocketDisconnect:
@@ -498,6 +536,9 @@ async def spotify_pause(payload: dict):
     device_id = payload.get("device_id")
     reason = payload.get("reason", "unspecified")
     logger.info(f"[pause] host={host_id} device={device_id} reason={reason}")
+    if host_id:
+        entry = _stats_for_host(host_id)
+        entry["pause_by_reason"][reason] += 1
     if not host_id:
         return Response("Missing hostId", status_code=400)
     token = await _get_valid_token(host_id)
@@ -597,9 +638,11 @@ async def spotify_queue_next(payload: dict):
     last = _queue_hits.get(key, 0)
     if now - last < _QUEUE_WINDOW_SEC:
         logger.info(f"[queue_next] dedup host={host_id} turn={turn_id or 'n/a'} uri={uri}")
-        return Response(status_code=202)
     _queue_hits[key] = now
     status, text = await _queue_next_core(host_id, device_id, uri)
+    entry = _stats_for_host(host_id)
+    entry["queue_next_count"] += 1
+    entry["last_queue_next_ts"] = now
     return Response(text, status_code=status if status else 204)
 
 @app.post("/api/spotify/next")
@@ -657,6 +700,20 @@ async def spotify_state(hostId: str):
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get("https://api.spotify.com/v1/me/player", headers=headers)
     return Response(r.text, status_code=r.status_code, media_type="application/json")
+
+@app.get("/api/debug/stats")
+def debug_stats_endpoint(hostId: str):
+    if not hostId:
+        return Response("Missing hostId", status_code=400)
+    entry = _stats_for_host(hostId)
+    return {
+        "queue_next_count": entry["queue_next_count"],
+        "pause_by_reason": dict(entry["pause_by_reason"]),
+        "last_phase": entry["last_phase"],
+        "last_queue_next_ts": entry["last_queue_next_ts"],
+        "last_turn_id": entry["last_turn_id"],
+        "last_turn_play_ts": entry["last_turn_play_ts"],
+    }
 
 @app.post("/api/spotify/volume")
 async def spotify_volume(payload: dict):
