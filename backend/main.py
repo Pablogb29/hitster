@@ -210,6 +210,10 @@ def _draw_track_card(room: Room) -> Optional[dict]:
     room.deck.setdefault("used", set()).add(card["trackId"])
     return card
 
+def _steps_need_refresh(steps: dict) -> bool:
+    codes = [steps.get("pause_code"), steps.get("transfer_code"), steps.get("queue_code"), steps.get("next_code")]
+    return any(code == 401 for code in codes if isinstance(code, int))
+
 async def _broadcast_room_snapshot(code: str, room: Room):
     await broadcast(code, "room:init", _serialize_room(room))
 
@@ -251,6 +255,25 @@ def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str)
     while right < len(dates) and dates[right] == target:
         right += 1
     return (lo, (left, right))
+
+def _deal_opening_cards(code: str, room: Room):
+    if not room.players:
+        raise ValueError("No players to deal")
+    if any(p.timeline for p in room.players):
+        logger.info(f"[deal] room={code} skipped (timelines already populated)")
+        return
+    available = _available_deck_cards(room)
+    if len(available) < len(room.players):
+        raise ValueError("Not enough tracks to deal opening cards")
+    dealt_ids: list[str] = []
+    for player in room.players:
+        card = _draw_track_card(room)
+        if not card:
+            raise ValueError("Deck exhausted during deal")
+        dealt_ids.append(card["trackId"])
+        player.timeline = [card.copy()]
+        player.score = len(player.timeline)
+    logger.info(f"[deal] room={code} players={len(room.players)} dealt_ids={dealt_ids}")
 
 async def _begin_turn(code: str, room: Room):
     if room.status == "finished" or not room.players:
@@ -407,8 +430,15 @@ async def ws_room(ws: WebSocket, code: str):
                 non_host_indices = [i for i, pl in enumerate(room.players) if not pl.is_host]
                 room.turnIndex = non_host_indices[0] if non_host_indices else 0
                 room.turn = None
-                room.status = "playing"
+                room.status = "setup"
                 room.winnerId = None
+                try:
+                    _deal_opening_cards(code, room)
+                except ValueError as exc:
+                    await broadcast(code, "game:error", {"message": str(exc)})
+                    room.status = "lobby"
+                    continue
+                room.status = "playing"
                 _set_phase(room.hostId, "playing")
                 await _broadcast_room_snapshot(code, room)
                 await _begin_turn(code, room)
@@ -510,6 +540,19 @@ async def _get_valid_token(host_id: str) -> str | None:
         info = spotify_tokens.get(host_id)
     return info.get("access_token") if info else None
 
+async def _attempt_refresh_token(host_id: str, reason: str) -> str | None:
+    logger.info(f"[spotify] token refresh host={host_id} reason={reason}")
+    try:
+        info = await _refresh_token(host_id)
+    except Exception as exc:
+        logger.warning(f"[spotify] token refresh host={host_id} failed exception={exc}")
+        return None
+    if not info or not info.get("access_token"):
+        logger.warning(f"[spotify] token refresh host={host_id} failed reason=no-token")
+        return None
+    logger.info(f"[spotify] token refresh host={host_id} ok")
+    return info.get("access_token")
+
 def _map_track_to_card(item: dict) -> Optional[dict]:
     try:
         t = item.get("track") or item
@@ -587,6 +630,10 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
 @app.get("/api/spotify/token")
 async def spotify_token(hostId: str):
     token = await _get_valid_token(hostId)
+    if not token:
+        token = await _attempt_refresh_token(hostId, "token-endpoint")
+        if token:
+            token = await _get_valid_token(hostId)
     if not token:
         return Response("Not linked", status_code=401)
     # Return access token with a short TTL hint
@@ -863,6 +910,15 @@ async def spotify_queue_next(payload: dict):
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 steps = await _queue_next_core(client, headers, host_id, device_id, target_uri)
+                if _steps_need_refresh(steps):
+                    new_token = await _attempt_refresh_token(host_id, "queue_next")
+                    if not new_token:
+                        return Response("Spotify authentication failed", status_code=401)
+                    token = new_token
+                    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    steps = await _queue_next_core(client, headers, host_id, device_id, target_uri)
+                    if _steps_need_refresh(steps):
+                        return Response("Spotify authentication failed", status_code=401)
                 queue_code = steps.get("queue_code") or 0
                 next_code = steps.get("next_code") or 0
                 if queue_code >= 400:
