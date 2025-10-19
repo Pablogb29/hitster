@@ -64,6 +64,8 @@ class TurnState(BaseModel):
     currentPlayerId: str
     drawn: Optional[dict] = None
     phase: Literal["playing", "placing", "result"] = "playing"
+    play_started: bool = False
+    last_play_uri: Optional[str] = None
 
 
 class Room(BaseModel):
@@ -217,6 +219,16 @@ def _get_player(room: Room, player_id: str) -> Optional[Player]:
             return p
     return None
 
+def _find_room_for_turn(host_id: str, turn_id: str | None) -> Optional[tuple[str, Room]]:
+    if not turn_id:
+        return None
+    for code, room in rooms.items():
+        if room.hostId != host_id:
+            continue
+        if room.turn and room.turn.turnId == turn_id:
+            return (code, room)
+    return None
+
 def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str) -> tuple[int, Optional[tuple[int, int]]]:
     dates = [card.get("release", {}).get("date", "") for card in timeline]
     target = track.get("release", {}).get("date", "")
@@ -252,7 +264,7 @@ async def _begin_turn(code: str, room: Room):
         await broadcast(code, "game:finish", {"winnerId": room.winnerId})
         return
     turn_id = code4() + code4()
-    room.turn = TurnState(turnId=turn_id, currentPlayerId=player.id, drawn=card, phase="playing")
+    room.turn = TurnState(turnId=turn_id, currentPlayerId=player.id, drawn=card, phase="playing", play_started=False, last_play_uri=None)
     room.status = "playing"
     _set_phase(room.hostId, "playing")
     _record_turn_play(room.hostId, turn_id)
@@ -270,10 +282,7 @@ async def _begin_turn(code: str, room: Room):
             },
         },
     )
-    await broadcast(code, "turn:placing", {"turnId": turn_id})
-    if room.turn:
-        room.turn.phase = "placing"
-    room.status = "placing"
+    logger.info(f"[emit turn:play] room={code} player={player.id} turnId={turn_id} song={card.get('trackId')}")
 
 async def _advance_turn(code: str, room: Room):
     if room.status == "finished":
@@ -827,7 +836,7 @@ async def spotify_queue_next(payload: dict):
     device_id = payload.get("device_id")
     uri = payload.get("uri") or (f"spotify:track:{payload.get('id')}" if payload.get('id') else None)
     turn_id = payload.get("turn_id") or payload.get("turnId")
-    if not host_id or not device_id or not uri:
+    if not host_id or not device_id or not uri or not turn_id:
         return Response("Missing params", status_code=400)
     target_uri = uri if uri.startswith("spotify:") else f"spotify:track:{uri.split(':')[-1]}"
     lock_key = f"{host_id}::{turn_id or target_uri}"
@@ -848,6 +857,7 @@ async def spotify_queue_next(payload: dict):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     start = time.perf_counter()
     result_payload: dict | None = None
+    room_lookup = _find_room_for_turn(host_id, turn_id)
 
     async with lock:
         try:
@@ -884,6 +894,16 @@ async def spotify_queue_next(payload: dict):
                     "dur_ms": duration_ms,
                     "turnId": turn_id,
                 }
+                if room_lookup:
+                    code, room_ref = room_lookup
+                    turn = room_ref.turn
+                    if turn and turn.turnId == turn_id:
+                        turn.play_started = True
+                        turn.last_play_uri = target_uri
+                        turn.phase = "placing"
+                        room_ref.status = "placing"
+                        await broadcast(code, "turn:placing", {"turnId": turn_id})
+                        await _broadcast_room_snapshot(code, room_ref)
         finally:
             queue_locks.pop(lock_key, None)
 
@@ -895,12 +915,21 @@ async def confirm_position(payload: ConfirmPositionPayload):
     room = rooms.get(payload.roomCode)
     if not room:
         return Response("Room not found", status_code=404)
+    logger.info(
+        f"[turn:confirm:req] room={room.code} player={payload.playerId} turnId={payload.turnId} phase={room.turn.phase if room.turn else None} play_started={room.turn.play_started if room.turn else None}"
+    )
     if not room.turn or room.turn.turnId != payload.turnId:
+        logger.warning(f"[turn:confirm] rejected turn mismatch room={room.code} turnId={payload.turnId}")
         return Response("Turn mismatch", status_code=409)
     if room.turn.currentPlayerId != payload.playerId:
-        return Response("Not your turn", status_code=409)
+        logger.warning(f"[turn:confirm] rejected wrong player room={room.code} player={payload.playerId}")
+        return Response("Wrong player", status_code=409)
     if room.turn.phase not in ("playing", "placing"):
+        logger.warning(f"[turn:confirm] rejected wrong phase room={room.code} phase={room.turn.phase}")
         return Response("Turn not accepting placements", status_code=409)
+    if not room.turn.play_started:
+        logger.warning(f"[turn:confirm] rejected play not started room={room.code}")
+        return Response("Play not started", status_code=409)
     card = room.turn.drawn
     if not card:
         return Response("No drawn card", status_code=409)
@@ -937,6 +966,7 @@ async def confirm_position(payload: ConfirmPositionPayload):
         room.turn.phase = "result"
         room.status = "result"
         room.turn.drawn = None
+        room.turn.play_started = False
         result_payload.update(
             {
                 "correct": True,
@@ -953,6 +983,7 @@ async def confirm_position(payload: ConfirmPositionPayload):
         room.turn.phase = "result"
         room.status = "result"
         room.turn.drawn = None
+        room.turn.play_started = False
         result_payload.update({"correct": False})
 
     _set_phase(room.hostId, "result")

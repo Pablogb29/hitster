@@ -86,6 +86,7 @@ type JoinInternalState = {
   ghostIndex: number;
   playInFlight: boolean;
   confirmInFlight: boolean;
+  playConfirmed: boolean;
   status: string;
   lastResult?: { turnId: string; message: string; correct: boolean };
   winnerId: string | null;
@@ -123,6 +124,7 @@ const createInitialState = (meId: string): JoinInternalState => ({
   ghostIndex: 0,
   playInFlight: false,
   confirmInFlight: false,
+  playConfirmed: false,
   status: "",
   lastResult: undefined,
   winnerId: null,
@@ -177,6 +179,7 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         ghostIndex,
         playInFlight: false,
         confirmInFlight: false,
+        playConfirmed: false,
         status: "Room synced",
         lastResult: undefined,
         winnerId: action.payload.winnerId ?? null,
@@ -194,6 +197,7 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         drawnCard: null,
         playInFlight: false,
         confirmInFlight: false,
+        playConfirmed: false,
         ghostIndex,
         status: isMine ? "Your turn – tap Play to begin." : "Waiting for other player...",
         lastResult: undefined,
@@ -225,11 +229,11 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       };
     }
     case "PLAY_REQUEST":
-      return { ...state, playInFlight: true, status: "Starting playback..." };
+      return { ...state, playInFlight: true, status: "Starting playback...", playConfirmed: false };
     case "PLAY_FINISH":
-      return { ...state, playInFlight: false, status: action.payload.status };
+      return { ...state, playInFlight: false, playConfirmed: true, status: action.payload.status };
     case "PLAY_FAILURE":
-      return { ...state, playInFlight: false, status: action.payload.status };
+      return { ...state, playInFlight: false, playConfirmed: false, status: action.payload.status };
     case "CONFIRM_REQUEST":
       return { ...state, confirmInFlight: true, status: action.payload.status };
     case "CONFIRM_SUCCESS":
@@ -271,6 +275,7 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         drawnCard: null,
         playInFlight: false,
         confirmInFlight: false,
+        playConfirmed: false,
         ghostIndex,
         status: message,
         lastResult: {
@@ -510,6 +515,10 @@ export default function Join() {
       dispatch({ type: "SET_STATUS", payload: { status: "No active turn." } });
       return;
     }
+    if (!state.playConfirmed) {
+      dispatch({ type: "SET_STATUS", payload: { status: "Play the card before confirming." } });
+      return;
+    }
     dispatch({ type: "CONFIRM_REQUEST", payload: { status: "Submitting placement..." } });
     try {
       const resp = await fetch(`${API_BASE}/api/turn/confirm_position`, {
@@ -590,7 +599,7 @@ export default function Join() {
   }, [mePlayer.timeline, isMyTurn, state.turnPhase, state.ghostIndex]);
 
   const playDisabled = !isMyTurn || state.turnPhase !== "playing" || state.playInFlight || !state.drawnCard;
-  const placementDisabled = !isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight;
+  const placementDisabled = !isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight || !state.playConfirmed;
 
   const otherPlayers = useMemo(() => state.players.filter((p) => p.id !== mePlayer.id), [state.players, mePlayer.id]);
 
