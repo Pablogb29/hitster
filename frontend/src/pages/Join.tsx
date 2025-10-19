@@ -52,16 +52,14 @@ export default function Join() {
   const [duplicateTurnDetected, setDuplicateTurnDetected] = useState(false);
   const [backendStats, setBackendStats] = useState<any>(null);
   const [backendStatsTs, setBackendStatsTs] = useState<number | null>(null);
-  const [lastPlayPath, setLastPlayPath] = useState<"queue_next" | "fallback" | "pending" | null>(null);
+  const [lastPlayPath, setLastPlayPath] = useState<string | null>(null);
   const [lastTargetUri, setLastTargetUri] = useState<string | null>(null);
   const [lastObservedUri, setLastObservedUri] = useState<string | null>(null);
   const [lastIsPlaying, setLastIsPlaying] = useState<boolean | null>(null);
-  const [statePollCount, setStatePollCount] = useState<number>(0);
   const [guessLockUntil, setGuessLockUntil] = useState<number>(0);
   const guessLockUntilRef = useRef<number>(0);
 
   const LISTENING_WINDOW_MS = 700;
-  const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   const normalizeUri = (input?: string | null) => {
     if (!input) return null;
     return input.startsWith("spotify:track:") ? input : `spotify:track:${input}`;
@@ -82,41 +80,6 @@ export default function Join() {
   }
 
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
-
-  const extractUriFromState = (state: any) => {
-    if (!state) return null;
-    const item = state.item || {};
-    return normalizeUri(item.uri || item.id || null);
-  };
-
-  const fetchPlayerState = async () => {
-    if (!hostId) return null;
-    try {
-      const resp = await fetch(`${API_BASE}/api/spotify/state?hostId=${hostId}`, { credentials: "include" });
-      if (!resp.ok) {
-        console.warn("[STATE] fetch status", resp.status);
-        return null;
-      }
-      return await resp.json();
-    } catch (err) {
-      console.warn("[STATE] fetch error", err);
-      return null;
-    }
-  };
-
-  const resumePlayback = async () => {
-    if (!hostId || !deviceId) return;
-    try {
-      await fetch(`${API_BASE}/api/spotify/resume`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ hostId, device_id: deviceId }),
-      });
-    } catch (err) {
-      console.warn("[PLAY] resume failed", err);
-    }
-  };
 
   const handleWsEvent = (evt: WSEvent) => {
     const eventType = evt?.event || "unknown";
@@ -148,7 +111,6 @@ export default function Join() {
       setLastTargetUri(null);
       setLastObservedUri(null);
       setLastIsPlaying(null);
-      setStatePollCount(0);
       setGuessLockUntil(0);
       guessLockUntilRef.current = 0;
       return;
@@ -166,7 +128,6 @@ export default function Join() {
       setLastTargetUri(null);
       setLastObservedUri(null);
       setLastIsPlaying(null);
-      setStatePollCount(0);
       setGuessLockUntil(0);
       guessLockUntilRef.current = 0;
       if (!isMine) {
@@ -203,7 +164,6 @@ export default function Join() {
       setLastTargetUri(null);
       setLastObservedUri(null);
       setLastIsPlaying(null);
-      setStatePollCount(0);
       if (!data.song) {
         console.log("[EVT:SKIP]", "no song payload provided");
         return;
@@ -402,10 +362,8 @@ export default function Join() {
     setPlayLock(true);
     setPlayDisabled(true);
     setLastPlayPath("pending");
-    setLastTargetUri(null);
     setLastObservedUri(null);
     setLastIsPlaying(null);
-    setStatePollCount(0);
     setLastPlayTrackStatus("");
     const now = Date.now();
     lastPlayClickTsRef.current = now;
@@ -427,70 +385,43 @@ export default function Join() {
         body: JSON.stringify(body),
       });
 
-      if (queueResp.ok) {
-        let queuePayload: any = null;
-        const contentType = queueResp.headers.get("content-type") || "";
-        if (contentType.includes("application/json")) {
-          queuePayload = await queueResp.json().catch(() => null);
-        }
-        setLastQueueNextStatus(`ok ${queueResp.status}`);
-        setStatus("queue_next dispatched");
-
-        const initialObserved = normalizeUri(queuePayload?.observed_uri ?? queuePayload?.observedUri ?? null);
-        const initialIsPlaying = typeof queuePayload?.is_playing === "boolean" ? queuePayload.is_playing : null;
-
-        if (initialObserved) {
-          setLastObservedUri(initialObserved);
-        }
-        if (initialIsPlaying !== null) {
-          setLastIsPlaying(initialIsPlaying);
-        }
-
-        const confirmation = await confirmOrFallback(targetUri, {
-          observedUri: initialObserved,
-          isPlaying: initialIsPlaying,
-        });
-
-        setLastPlayPath(confirmation.path);
-        if (confirmation.path === "queue_next") {
-          setStatus(confirmation.info);
-          setLastPlayTrackStatus("");
-        } else {
-          setStatus(confirmation.info);
-          setLastPlayTrackStatus(confirmation.info);
-        }
-
-        if (confirmation.success) {
-          hasPlayedThisTurnRef.current = true;
-          setHasPlayedThisTurn(true);
-          const unlockAt = Date.now() + LISTENING_WINDOW_MS;
-          setGuessLockUntil(unlockAt);
-          guessLockUntilRef.current = unlockAt;
-        }
+      if (queueResp.status === 202) {
+        const payload = await queueResp.json().catch(() => ({}));
+        const label = payload?.status ? `202 ${payload.status}` : "202 in-flight";
+        setLastQueueNextStatus(label);
+        setStatus(label);
+        setLastPlayPath("pending");
+        setLastPlayTrackStatus(label);
+        setLastObservedUri(null);
+        setLastIsPlaying(null);
         return;
       }
 
-      const text = await queueResp.text().catch(() => "");
-      setLastQueueNextStatus(`error ${queueResp.status} ${text}`);
-      console.warn("[PLAY] queue_next error", queueResp.status, text);
-      setLastPlayPath("fallback");
-
-      const fallbackUri = targetUri || normalizeUri(uri || (id ? `spotify:track:${id}` : null));
-      if (!fallbackUri) {
-        setLastPlayTrackStatus("fallback skipped (no uri)");
-        setStatus("queue_next failed (no uri for fallback)");
+      if (!queueResp.ok) {
+        const text = await queueResp.text().catch(() => "");
+        const label = `error ${queueResp.status} ${text}`.trim();
+        setLastQueueNextStatus(label);
+        setStatus(label);
+        setLastPlayPath("error");
+        setLastPlayTrackStatus(label);
+        setLastObservedUri(null);
+        setLastIsPlaying(null);
         return;
       }
 
-      const playResp = await fetch(`${API_BASE}/api/spotify/play_track`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ hostId, device_id: deviceId, uri: fallbackUri }),
-      });
-      setLastPlayTrackStatus(`play_track fallback ${playResp.status}`);
-      setStatus(`play_track fallback ${playResp.status}`);
-      if (playResp.ok) {
+      const data = await queueResp.json().catch(() => ({}));
+      const observed = normalizeUri(data?.observed_uri ?? data?.observedUri ?? null);
+      const playing = typeof data?.is_playing === "boolean" ? data.is_playing : null;
+      const path = data?.path || "queue";
+
+      setLastQueueNextStatus(`ok ${queueResp.status}`);
+      setStatus(`queue_next path=${path} playing=${playing}`);
+      setLastPlayPath(path);
+      setLastObservedUri(observed);
+      setLastIsPlaying(playing);
+      setLastPlayTrackStatus(`server path ${path}`);
+
+      if (playing === true || observed === targetUri) {
         hasPlayedThisTurnRef.current = true;
         setHasPlayedThisTurn(true);
         const unlockAt = Date.now() + LISTENING_WINDOW_MS;
@@ -505,89 +436,6 @@ export default function Join() {
       setPlayLock(false);
       setPlayDisabled(false);
     }
-  }
-
-  async function confirmOrFallback(
-    targetUri: string | null,
-    initial: { observedUri?: string | null; isPlaying?: boolean | null } = {}
-  ): Promise<{ path: "queue_next" | "fallback"; info: string; success: boolean }> {
-    const normalizedTarget = normalizeUri(targetUri);
-    if (!normalizedTarget) {
-      return { path: "queue_next", info: "queue_next OK (no target uri)", success: true };
-    }
-
-    let polls = 0;
-    let currentObserved = normalizeUri(initial.observedUri || null);
-    let currentIsPlaying = typeof initial.isPlaying === "boolean" ? initial.isPlaying : null;
-
-    if (currentObserved || currentIsPlaying !== null) {
-      polls = 1;
-      setStatePollCount(1);
-    } else {
-      setStatePollCount(0);
-    }
-
-    if (currentObserved) {
-      setLastObservedUri(currentObserved);
-    }
-    if (currentIsPlaying !== null) {
-      setLastIsPlaying(currentIsPlaying);
-    }
-
-    if (currentObserved === normalizedTarget && currentIsPlaying === true) {
-      return { path: "queue_next", info: "state OK (initial)", success: true };
-    }
-
-    const delays = [250, 500, 750, 1000];
-
-    for (const delayMs of delays) {
-      await delay(delayMs);
-      const state = await fetchPlayerState();
-      if (!state) continue;
-      polls += 1;
-      setStatePollCount(polls);
-      currentObserved = extractUriFromState(state);
-      currentIsPlaying = typeof state.is_playing === "boolean" ? state.is_playing : null;
-      setLastObservedUri(currentObserved);
-      setLastIsPlaying(currentIsPlaying);
-      console.log("[PLAY] state poll", { delayMs, observed: currentObserved, isPlaying: currentIsPlaying });
-      if (currentObserved === normalizedTarget && currentIsPlaying === true) {
-        return { path: "queue_next", info: `state OK after ${delayMs}ms`, success: true };
-      }
-      if (currentObserved === normalizedTarget && currentIsPlaying === false) {
-        console.log("[PLAY] matched uri but paused, resume attempt");
-        await resumePlayback();
-      }
-    }
-
-    const finalObserved = currentObserved;
-    const finalIsPlaying = currentIsPlaying;
-
-    if (finalObserved === normalizedTarget && finalIsPlaying === false) {
-      await resumePlayback();
-      return { path: "queue_next", info: "resume issued after polls", success: true };
-    }
-
-    const shouldFallback = finalIsPlaying === false && finalObserved !== normalizedTarget;
-
-    if (shouldFallback) {
-      console.log("[PLAY] fallback trigger", { finalObserved, finalIsPlaying });
-      try {
-        const resp = await fetch(`${API_BASE}/api/spotify/play_track`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ hostId, device_id: deviceId, uri: normalizedTarget }),
-        });
-        return { path: "fallback", info: `play_track fallback ${resp.status}`, success: resp.ok };
-      } catch (err: any) {
-        const info = `play_track fallback error ${err?.message || err}`;
-        console.warn("[PLAY] fallback error", err);
-        return { path: "fallback", info, success: false };
-      }
-    }
-
-    return { path: "queue_next", info: "state accepted after polls", success: true };
   }
 
   async function forcePlayTest() {
@@ -664,7 +512,6 @@ export default function Join() {
     `lastTargetUri: ${lastTargetUri || "-"}`,
     `lastObservedUri: ${lastObservedUri || "-"}`,
     `lastIsPlaying: ${lastIsPlaying === null ? "n/a" : lastIsPlaying}`,
-    `statePollCount: ${statePollCount}`,
     `hasPlayedThisTurn: ${hasPlayedThisTurn}`,
     `duplicateTurnDetected: ${duplicateTurnDetected}`,
     `guessLockActive: ${guessLocked}`,

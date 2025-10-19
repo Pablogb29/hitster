@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import asyncio
@@ -77,6 +78,9 @@ clients: dict[str, list[WebSocket]] = {}
 
 # Debug stats per host
 debug_stats: dict[str, dict] = {}
+queue_locks: dict[str, asyncio.Lock] = {}
+queue_recent: dict[str, float] = {}
+QUEUE_RECENT_WINDOW = 2.0
 
 def _stats_for_host(host_id: str) -> dict:
     entry = debug_stats.get(host_id)
@@ -88,6 +92,11 @@ def _stats_for_host(host_id: str) -> dict:
             "last_queue_next_ts": 0.0,
             "last_turn_id": None,
             "last_turn_play_ts": 0.0,
+            "last_target_uri": None,
+            "last_observed_uri": None,
+            "last_path": None,
+            "last_result_ts": 0.0,
+            "last_duration_ms": 0.0,
         }
         debug_stats[host_id] = entry
     return entry
@@ -106,19 +115,27 @@ def _record_turn_play(host_id: str | None, turn_id: str | None):
         entry["last_turn_id"] = turn_id
     entry["last_turn_play_ts"] = time.time()
 
-async def _fetch_player_state(host_id: str) -> dict | None:
-    token = await _get_valid_token(host_id)
-    if not token:
-        return None
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get("https://api.spotify.com/v1/me/player", headers=headers)
-    if resp.status_code >= 400:
-        return None
+async def _fetch_currently_playing(client: httpx.AsyncClient, headers: dict) -> tuple[str | None, bool | None, dict | None]:
     try:
-        return resp.json()
+        resp = await client.get("https://api.spotify.com/v1/me/player/currently-playing", headers=headers)
+    except httpx.HTTPError:
+        return (None, None, None)
+    if resp.status_code == 204:
+        return (None, None, None)
+    if resp.status_code >= 400:
+        return (None, None, None)
+    try:
+        data = resp.json()
     except json.JSONDecodeError:
-        return None
+        return (None, None, None)
+    item = data.get("item") or {}
+    raw_uri = item.get("uri") or item.get("id")
+    if raw_uri:
+        observed_uri = raw_uri if str(raw_uri).startswith("spotify:") else f"spotify:track:{raw_uri}"
+    else:
+        observed_uri = None
+    is_playing = data.get("is_playing")
+    return (observed_uri, is_playing, data)
 
 def code4() -> str:
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -595,49 +612,134 @@ async def spotify_resume(payload: dict):
         )
     return Response(r.text, status_code=204 if r.status_code < 400 else r.status_code)
 
-async def _queue_next_core(host_id: str, device_id: str, uri: str) -> tuple[int, str]:
-    token = await _get_valid_token(host_id)
-    if not token:
-        return (401, "Not linked")
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    print(f"[queue_next] host={host_id} device={device_id} uri={uri}")
-    async with httpx.AsyncClient(timeout=20) as client:
-        pause_code = transfer_code = queue_code = next_code = None
-        try:
-            pr = await client.put(
-                f"https://api.spotify.com/v1/me/player/pause?device_id={device_id}",
-                headers=headers,
-            )
-            pause_code = pr.status_code
-        except Exception:
-            pause_code = -1
-        try:
-            tr = await client.put(
-                "https://api.spotify.com/v1/me/player",
-                headers=headers,
-                json={"device_ids": [device_id], "play": False},
-            )
-            transfer_code = tr.status_code
-        except Exception:
-            transfer_code = -1
+async def _queue_next_core(client: httpx.AsyncClient, headers: dict, host_id: str, device_id: str, uri: str) -> dict:
+    logger.info(f"[queue_next] host={host_id} device={device_id} uri={uri}")
+    pause_code = transfer_code = queue_code = next_code = None
+    pause_text = transfer_text = queue_text = next_text = ""
+    try:
+        pr = await client.put(
+            f"https://api.spotify.com/v1/me/player/pause?device_id={device_id}",
+            headers=headers,
+        )
+        pause_code = pr.status_code
+        pause_text = pr.text
+    except Exception as exc:
+        pause_code = -1
+        pause_text = str(exc)
+    try:
+        tr = await client.put(
+            "https://api.spotify.com/v1/me/player",
+            headers=headers,
+            json={"device_ids": [device_id], "play": False},
+        )
+        transfer_code = tr.status_code
+        transfer_text = tr.text
+    except Exception as exc:
+        transfer_code = -1
+        transfer_text = str(exc)
+    try:
         qr = await client.post(
             f"https://api.spotify.com/v1/me/player/queue?uri={uri}&device_id={device_id}",
             headers=headers,
         )
         queue_code = qr.status_code
+        queue_text = qr.text
+    except Exception as exc:
+        queue_code = -1
+        queue_text = str(exc)
+    try:
         nr = await client.post(
             f"https://api.spotify.com/v1/me/player/next?device_id={device_id}",
             headers=headers,
         )
         next_code = nr.status_code
-        print(f"[queue_next] steps pause={pause_code} transfer={transfer_code} queue={queue_code} next={next_code}")
-        if queue_code and queue_code >= 400:
-            return (queue_code, qr.text)
-        return (next_code, nr.text)
+        next_text = nr.text
+    except Exception as exc:
+        next_code = -1
+        next_text = str(exc)
 
-# Reentrancy guard for queue_next (per host/turn or host/uri) within a short window
-_queue_hits: dict[str, float] = {}
-_QUEUE_WINDOW_SEC = 1.0
+    logger.info(
+        f"[queue_next] steps pause={pause_code} transfer={transfer_code} queue={queue_code} next={next_code}"
+    )
+
+    return {
+        "pause_code": pause_code,
+        "transfer_code": transfer_code,
+        "queue_code": queue_code,
+        "next_code": next_code,
+        "queue_text": queue_text,
+        "next_text": next_text,
+    }
+
+async def _reconcile_playback(
+    client: httpx.AsyncClient,
+    headers: dict,
+    host_id: str,
+    device_id: str,
+    target_uri: str,
+) -> dict:
+    delays = [0.2, 0.4, 0.7, 1.0]
+    fallback_delays = [0.3, 0.6, 0.9]
+    observed_uri: str | None = None
+    is_playing: bool | None = None
+    path = "queue"
+
+    for idx, delay in enumerate(delays, start=1):
+        await asyncio.sleep(delay)
+        observed_uri, is_playing, _ = await _fetch_currently_playing(client, headers)
+        logger.info(
+            f"[queue_next] reconcile host={host_id} try={idx}/{len(delays)} observed={observed_uri} playing={is_playing}"
+        )
+        if observed_uri == target_uri and is_playing is True:
+            logger.info(
+                f"[queue_next] reconcile result: host={host_id} path={path} observed={observed_uri} playing={is_playing}"
+            )
+            return {"observed_uri": observed_uri, "is_playing": is_playing, "path": path}
+        if observed_uri == target_uri and is_playing is False:
+            # Give Spotify a moment to flip to playing before forcing resume
+            continue
+
+    # Fallback: play track directly
+    path = "fallback_play"
+    try:
+        await client.put(
+            f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
+            headers=headers,
+            json={"uris": [target_uri]},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(f"[queue_next] fallback_play host={host_id} error: {exc}")
+
+    for idx, delay in enumerate(fallback_delays, start=1):
+        await asyncio.sleep(delay)
+        observed_uri, is_playing, _ = await _fetch_currently_playing(client, headers)
+        logger.info(
+            f"[queue_next] fallback host={host_id} try={idx}/{len(fallback_delays)} observed={observed_uri} playing={is_playing}"
+        )
+        if observed_uri == target_uri and is_playing is True:
+            logger.info(
+                f"[queue_next] reconcile result: host={host_id} path={path} observed={observed_uri} playing={is_playing}"
+            )
+            return {"observed_uri": observed_uri, "is_playing": is_playing, "path": path}
+        if observed_uri == target_uri and is_playing is False:
+            break
+
+    # Final fallback: resume without URIs
+    path = "fallback_resume"
+    try:
+        await client.put(
+            f"https://api.spotify.com/v1/me/player/play?device_id={device_id}",
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(f"[queue_next] fallback_resume host={host_id} error: {exc}")
+
+    await asyncio.sleep(0.4)
+    observed_uri, is_playing, _ = await _fetch_currently_playing(client, headers)
+    logger.info(
+        f"[queue_next] reconcile result: host={host_id} path={path} observed={observed_uri} playing={is_playing}"
+    )
+    return {"observed_uri": observed_uri, "is_playing": is_playing, "path": path}
 
 @app.post("/api/spotify/queue_next")
 async def spotify_queue_next(payload: dict):
@@ -647,42 +749,65 @@ async def spotify_queue_next(payload: dict):
     turn_id = payload.get("turn_id") or payload.get("turnId")
     if not host_id or not device_id or not uri:
         return Response("Missing params", status_code=400)
-    # Reentrancy guard key: prefer host+turn, fallback to host+uri
-    key = f"{host_id}:::{turn_id}" if turn_id else f"{host_id}:::{uri}"
+    target_uri = uri if uri.startswith("spotify:") else f"spotify:track:{uri.split(':')[-1]}"
+    lock_key = f"{host_id}::{turn_id or target_uri}"
+    lock = queue_locks.setdefault(lock_key, asyncio.Lock())
+    if lock.locked():
+        return JSONResponse(status_code=202, content={"status": "in-flight", "turnId": turn_id})
+
+    recent_key = f"{host_id}::{target_uri}"
     now = time.time()
-    last = _queue_hits.get(key, 0)
-    if now - last < _QUEUE_WINDOW_SEC:
-        logger.info(f"[queue_next] dedup host={host_id} turn={turn_id or 'n/a'} uri={uri}")
-    _queue_hits[key] = now
-    status, text = await _queue_next_core(host_id, device_id, uri)
-    entry = _stats_for_host(host_id)
-    entry["queue_next_count"] += 1
-    entry["last_queue_next_ts"] = now
+    if now - queue_recent.get(recent_key, 0) < QUEUE_RECENT_WINDOW:
+        logger.info(f"[queue_next] dedup host={host_id} turn={turn_id or 'n/a'} uri={target_uri}")
+        return JSONResponse(status_code=202, content={"status": "duplicate", "turnId": turn_id})
 
-    if status and status >= 400:
-        return Response(text, status_code=status)
+    token = await _get_valid_token(host_id)
+    if not token:
+        return Response("Not linked", status_code=401)
 
-    observed_uri = None
-    observed_is_playing = None
-    try:
-        await asyncio.sleep(0.3)
-    except asyncio.CancelledError:
-        pass
-    state = await _fetch_player_state(host_id)
-    if state:
-        item = state.get("item") or {}
-        raw_uri = item.get("uri") or item.get("id")
-        if raw_uri:
-            observed_uri = raw_uri if str(raw_uri).startswith("spotify:") else f"spotify:track:{raw_uri}"
-        observed_is_playing = state.get("is_playing")
-    logger.info(
-        f"[queue_next] observation target={uri} observed={observed_uri} playing={observed_is_playing}"
-    )
-    return {
-        "target_uri": uri,
-        "observed_uri": observed_uri,
-        "is_playing": observed_is_playing,
-    }
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    start = time.perf_counter()
+    result_payload: dict | None = None
+
+    async with lock:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                steps = await _queue_next_core(client, headers, host_id, device_id, target_uri)
+                queue_code = steps.get("queue_code") or 0
+                next_code = steps.get("next_code") or 0
+                if queue_code >= 400:
+                    return Response(steps.get("queue_text", "queue failed"), status_code=queue_code)
+                if next_code >= 400:
+                    return Response(steps.get("next_text", "next failed"), status_code=next_code)
+
+                reconcile = await _reconcile_playback(client, headers, host_id, device_id, target_uri)
+                duration_ms = int((time.perf_counter() - start) * 1000)
+
+                entry = _stats_for_host(host_id)
+                entry["queue_next_count"] += 1
+                entry["last_queue_next_ts"] = now
+                if turn_id:
+                    entry["last_turn_id"] = turn_id
+                entry["last_target_uri"] = target_uri
+                entry["last_observed_uri"] = reconcile.get("observed_uri")
+                entry["last_path"] = reconcile.get("path")
+                entry["last_result_ts"] = time.time()
+                entry["last_duration_ms"] = duration_ms
+
+                queue_recent[recent_key] = time.time()
+
+                result_payload = {
+                    "target_uri": target_uri,
+                    "observed_uri": reconcile.get("observed_uri"),
+                    "is_playing": reconcile.get("is_playing"),
+                    "path": reconcile.get("path"),
+                    "dur_ms": duration_ms,
+                    "turnId": turn_id,
+                }
+        finally:
+            queue_locks.pop(lock_key, None)
+
+    return JSONResponse(status_code=200, content=result_payload or {})
 
 @app.post("/api/spotify/next")
 async def spotify_next(payload: dict):
@@ -752,6 +877,11 @@ def debug_stats_endpoint(hostId: str):
         "last_queue_next_ts": entry["last_queue_next_ts"],
         "last_turn_id": entry["last_turn_id"],
         "last_turn_play_ts": entry["last_turn_play_ts"],
+        "last_target_uri": entry["last_target_uri"],
+        "last_observed_uri": entry["last_observed_uri"],
+        "last_path": entry["last_path"],
+        "last_result_ts": entry["last_result_ts"],
+        "last_duration_ms": entry["last_duration_ms"],
     }
 
 @app.post("/api/spotify/volume")
