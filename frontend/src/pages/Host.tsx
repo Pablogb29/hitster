@@ -59,7 +59,8 @@ export default function Host() {
   const [room, setRoom] = useState<Room | null>(null);
   const [hiddenCard, setHiddenCard] = useState<HiddenCardState | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
-  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
+  // Using underscore prefix to indicate intentionally unused variable
+  const [_wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
   const [hostId, setHostId] = useState<string>("");
   const [playlistId, setPlaylistId] = useState<string>("");
   const [playlistName, setPlaylistName] = useState<string>("");
@@ -241,22 +242,7 @@ export default function Host() {
     }
   }, [hostId]);
 
-  // Fetch playlists when Spotify is connected
-  const fetchPlaylists = useCallback(async () => {
-    if (!hostId || !spotifyConnected) return;
-    
-    try {
-      const resp = await fetch(`/api/spotify/playlists?hostId=${encodeURIComponent(hostId)}`);
-      if (!resp.ok) {
-        throw new Error(`Failed to fetch playlists: ${resp.status}`);
-      }
-      const data = await resp.json();
-      // Handle playlists data
-      console.log("Playlists:", data);
-    } catch (err: any) {
-      setStatusMessage(`Error: ${err.message}`);
-    }
-  }, [hostId, spotifyConnected]);
+  // Removed unused fetchPlaylists function
 
   // Render Lobby view
   const renderLobby = () => (
@@ -408,8 +394,7 @@ export default function Host() {
   // Determine which view to render based on room status
   const shouldShowLobby = !room || room.status === "lobby" || room.status === "setup";
   
-  // Use wsStatus in a conditional to avoid unused variable warning
-  const isConnected = wsStatus === "open";
+  // Removed unused isConnected variable
   
   return shouldShowLobby ? renderLobby() : renderTabletop();
 }
