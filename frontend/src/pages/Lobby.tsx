@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { connectWS, type WSEvent } from "../lib/ws";
 
 type Release = {
@@ -133,6 +133,7 @@ const API_BASE = ((import.meta as any).env?.VITE_BACKEND_URL || `${window.locati
 
 export default function Lobby() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [state, dispatch] = useReducer(lobbyReducer, createInitialLobbyState());
   const connRef = useRef<ReturnType<typeof connectWS> | null>(null);
   const [qrCode, setQrCode] = useState<string>("");
@@ -194,7 +195,7 @@ export default function Lobby() {
     };
   }, [handleWsEvent]);
 
-  // Check Spotify status
+  // Check Spotify status and handle OAuth callback
   useEffect(() => {
     if (!state.hostId) return;
     
@@ -210,8 +211,20 @@ export default function Lobby() {
       }
     };
 
-    checkSpotifyStatus();
-  }, [state.hostId]);
+    // Check if this is a Spotify OAuth callback
+    const spotifyOk = params.get("spotify");
+    const callbackHostId = params.get("hostId");
+    
+    if (spotifyOk === "ok" && callbackHostId === state.hostId) {
+      // Clear the URL parameters and refresh Spotify status
+      window.history.replaceState({}, document.title, window.location.pathname);
+      dispatch({ type: "SET_STATUS", status: "Spotify authentication completed, checking status..." });
+      // Small delay to ensure backend has processed the token
+      setTimeout(checkSpotifyStatus, 1000);
+    } else {
+      checkSpotifyStatus();
+    }
+  }, [state.hostId, params]);
 
   // Load playlists when Spotify is linked
   useEffect(() => {
@@ -239,10 +252,13 @@ export default function Lobby() {
 
   const handleSpotifyLogin = useCallback(async () => {
     try {
+      dispatch({ type: "SET_STATUS", status: "Redirecting to Spotify..." });
       const resp = await fetch(`${API_BASE}/api/spotify/login?hostId=${encodeURIComponent(state.hostId)}`);
       if (resp.ok) {
         const data = await resp.json();
         window.location.href = data.authorize_url;
+      } else {
+        dispatch({ type: "SET_STATUS", status: "Failed to get Spotify login URL" });
       }
     } catch (err: any) {
       dispatch({ type: "SET_STATUS", status: `Spotify login failed: ${err.message}` });

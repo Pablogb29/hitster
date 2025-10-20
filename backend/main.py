@@ -676,16 +676,20 @@ async def _load_playlist(host_id: str, playlist_id: str | None = None, name: str
 
 @app.get("/api/spotify/token")
 async def spotify_token(hostId: str):
+    logger.info(f"[spotify_token] request for host={hostId}")
     token = await _get_valid_token(hostId)
     if not token:
+        logger.info(f"[spotify_token] no valid token, attempting refresh for host={hostId}")
         token = await _attempt_refresh_token(hostId, "token-endpoint")
         if token:
             token = await _get_valid_token(hostId)
     if not token:
+        logger.warning(f"[spotify_token] no token available for host={hostId}")
         return Response("Not linked", status_code=401)
     # Return access token with a short TTL hint
     info = spotify_tokens.get(hostId) or {}
     ttl = max(0, int(info.get("expires_at", 0)) - _now())
+    logger.info(f"[spotify_token] returning token for host={hostId} ttl={ttl}")
     return {"access_token": token, "expires_in": ttl}
 
 @app.post("/api/spotify/play")
@@ -1251,23 +1255,30 @@ def _choose_frontend_origin() -> str:
 @app.get("/api/spotify/callback")
 async def spotify_callback(code: str | None = None, state: str | None = None):
     if not code or not state or state not in spotify_states:
+        logger.warning(f"[spotify_callback] invalid state: code={code}, state={state}")
         return Response("Invalid state", status_code=400)
     host_id = spotify_states[state]["hostId"]
+    logger.info(f"[spotify_callback] processing OAuth for host={host_id}")
     # cleanup state
     spotify_states.pop(state, None)
     try:
         token = await _exchange_code_for_token(code)
         spotify_tokens[host_id] = token
+        logger.info(f"[spotify_callback] token stored for host={host_id}, expires_at={token.get('expires_at')}")
     except httpx.HTTPError as e:
+        logger.error(f"[spotify_callback] token exchange failed for host={host_id}: {e}")
         return Response(f"Token exchange failed: {e}", status_code=400)
-    # Redirect user back to frontend host page (best-effort)
+    # Redirect user back to frontend host lobby page (best-effort)
     frontend = _choose_frontend_origin()
     loc = f"{frontend}/host?spotify=ok&hostId={host_id}"
+    logger.info(f"[spotify_callback] redirecting to {loc}")
     return Response(status_code=302, headers={"Location": loc})
 
 @app.get("/api/spotify/status")
 def spotify_status(hostId: str):
-    return {"linked": hostId in spotify_tokens}
+    linked = hostId in spotify_tokens
+    logger.info(f"[spotify_status] host={hostId} linked={linked} tokens_count={len(spotify_tokens)}")
+    return {"linked": linked}
 
 @app.get("/api/spotify/playlists")
 async def spotify_playlists(hostId: str, limit: int = 20):
