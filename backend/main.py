@@ -193,6 +193,26 @@ def _serialize_room(room: Room, mask_drawn: bool = True) -> dict:
         ],
     }
 
+async def _pause_playback(host_id: str, reason: str = "result", device_id: Optional[str] = None) -> None:
+    """Pause playback on the host's active device. Device is optional; Spotify will pause active device."""
+    if host_id:
+        entry = _stats_for_host(host_id)
+        entry["pause_by_reason"][reason] += 1
+    token = await _get_valid_token(host_id)
+    if not token:
+        logger.warning(f"[pause] host={host_id} reason={reason} skipped: no token")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = f"https://api.spotify.com/v1/me/player/pause"
+    if device_id:
+        url += f"?device_id={device_id}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.put(url, headers=headers)
+        logger.info(f"[pause] host={host_id} device={device_id or 'active'} reason={reason} code={r.status_code}")
+    except Exception as exc:
+        logger.warning(f"[pause] host={host_id} reason={reason} exception={exc}")
+
 def _available_deck_cards(room: Room) -> list[dict]:
     used = room.deck.get("used", set())
     discard = room.deck.get("discard", set())
@@ -1083,6 +1103,17 @@ async def confirm_position(payload: ConfirmPositionPayload):
                 "finalIndex": insert_index,
                 "newScore": player.score,
                 "placedTrack": card,
+                "revealCard": card,
+                "players": [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "score": p.score,
+                        "timeline": p.timeline,
+                        "seat": p.seat,
+                    }
+                    for p in room.players
+                ],
             }
         )
         # Check win condition only for actual players
@@ -1095,17 +1126,28 @@ async def confirm_position(payload: ConfirmPositionPayload):
         room.status = "result"
         room.turn.drawn = None
         room.turn.play_started = False
-        result_payload.update({"correct": False})
+        result_payload.update({
+            "correct": False,
+            "revealCard": card,
+            "players": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "score": p.score,
+                    "timeline": p.timeline,
+                    "seat": p.seat,
+                }
+                for p in room.players
+            ],
+        })
 
     _set_phase(room.hostId, "result")
+    # Proactively pause playback when result is determined
+    await _pause_playback(room.hostId, reason="result")
     logger.info(
-        f"[turn:confirm] room={room.code} player={player.id} targetIndex={payload.targetIndex} correct={correct} finalIndex={result_payload.get('finalIndex')}"
+        f"[turn:result] room={room.code} player={player.id} turnId={room.turn.turnId if room.turn else None} correct={correct} finalIndex={result_payload.get('finalIndex')}"
     )
-    await broadcast(
-        room.code,
-        "turn:result",
-        result_payload,
-    )
+    await broadcast(room.code, "turn:result", result_payload)
     if room.status == "finished" and room.winnerId:
         await broadcast(room.code, "game:finish", {"winnerId": room.winnerId})
     await _broadcast_room_snapshot(room.code, room)
