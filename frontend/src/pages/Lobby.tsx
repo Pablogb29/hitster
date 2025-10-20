@@ -152,35 +152,58 @@ export default function Lobby() {
     }
   }, []);
 
-  // Initialize room and WebSocket connection
+  // Initialize room and WebSocket connection, reusing existing identifiers across OAuth redirects
   useEffect(() => {
     const initializeRoom = async () => {
       try {
+        // Attempt to reuse persisted identifiers (across Spotify OAuth redirect)
+        const storedCode = sessionStorage.getItem("hitster_roomCode") || "";
+        const storedHostId = sessionStorage.getItem("hitster_hostId") || "";
+        // Also consider URL params (hostId/code) if present
+        const urlHostId = params.get("hostId") || "";
+        const urlCode = params.get("code") || "";
+
+        const reuseCode = urlCode || storedCode;
+        const reuseHostId = urlHostId || storedHostId;
+
+        // Helper to connect to an existing room with known identifiers
+        const connectToRoom = async (code: string, hostId: string) => {
+          dispatch({ type: "SET_STATUS", status: `Connecting to room ${code}...` });
+          dispatch({ type: "SET_ROOM_CODE", code });
+          dispatch({ type: "SET_HOST_ID", hostId });
+          sessionStorage.setItem("hitster_roomCode", code);
+          sessionStorage.setItem("hitster_hostId", hostId);
+
+          const conn = connectWS(code, handleWsEvent);
+          connRef.current = conn;
+          conn.ws.addEventListener("open", () => {
+            dispatch({ type: "SET_WS_CONNECTED", connected: true });
+            dispatch({ type: "SET_STATUS", status: "Connected to room" });
+            // Join as host (host is not added as a player on the server)
+            conn.send("join", { id: hostId, name: "Host", is_host: true });
+          });
+          conn.ws.addEventListener("close", () => {
+            dispatch({ type: "SET_WS_CONNECTED", connected: false });
+          });
+
+          // Generate QR code
+          const QRCode = (await import("qrcode")).default;
+          const qr = await QRCode.toDataURL(`${window.location.origin}/join?code=${code}`);
+          setQrCode(qr);
+        };
+
+        if (reuseCode && reuseHostId) {
+          await connectToRoom(reuseCode, reuseHostId);
+          return;
+        }
+
+        // Otherwise create a new room
         dispatch({ type: "SET_STATUS", status: "Creating room..." });
         const resp = await fetch(`${API_BASE}/api/create-room`);
         if (!resp.ok) throw new Error(`Failed to create room: ${resp.status}`);
         const data = await resp.json();
-        
-        dispatch({ type: "SET_ROOM_CODE", code: data.code });
-        dispatch({ type: "SET_HOST_ID", hostId: data.hostId });
-        
-        // Connect to WebSocket
-        const conn = connectWS(data.code, handleWsEvent);
-        connRef.current = conn;
-        conn.ws.addEventListener("open", () => {
-          dispatch({ type: "SET_WS_CONNECTED", connected: true });
-          dispatch({ type: "SET_STATUS", status: "Connected to room" });
-          // Join as host
-          conn.send("join", { id: data.hostId, name: "Host", is_host: true });
-        });
-        conn.ws.addEventListener("close", () => {
-          dispatch({ type: "SET_WS_CONNECTED", connected: false });
-        });
 
-        // Generate QR code
-        const QRCode = (await import("qrcode")).default;
-        const qr = await QRCode.toDataURL(`${window.location.origin}/join?code=${data.code}`);
-        setQrCode(qr);
+        await connectToRoom(data.code, data.hostId);
       } catch (err: any) {
         dispatch({ type: "SET_STATUS", status: `Error: ${err.message}` });
       }
@@ -193,7 +216,7 @@ export default function Lobby() {
         connRef.current.ws.close();
       }
     };
-  }, [handleWsEvent]);
+  }, [handleWsEvent, params]);
 
   // Check Spotify status and handle OAuth callback
   useEffect(() => {
@@ -253,6 +276,9 @@ export default function Lobby() {
   const handleSpotifyLogin = useCallback(async () => {
     try {
       dispatch({ type: "SET_STATUS", status: "Redirecting to Spotify..." });
+      // Persist identifiers so we can reconnect to the same room after OAuth redirect
+      if (state.roomCode) sessionStorage.setItem("hitster_roomCode", state.roomCode);
+      if (state.hostId) sessionStorage.setItem("hitster_hostId", state.hostId);
       const resp = await fetch(`${API_BASE}/api/spotify/login?hostId=${encodeURIComponent(state.hostId)}`);
       if (resp.ok) {
         const data = await resp.json();
