@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Lobby from "./pages/Lobby";
 import Host from "./pages/Host";
 import Join from "./pages/Join";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -20,7 +21,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Home/>}/>
-        <Route path="/host" element={<Host/>}/>
+        <Route path="/host" element={<Lobby/>}/>
+        <Route path="/host/tabletop" element={<Host/>}/>
         <Route path="/join" element={<ErrorBoundary><Join/></ErrorBoundary>}/>
       </Routes>
     </BrowserRouter>

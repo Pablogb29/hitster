@@ -224,6 +224,7 @@ def _get_player(room: Room, player_id: str) -> Optional[Player]:
     return None
 
 def _cleanup_host_entries(room: Room):
+    """Remove any host entries from the players list - Host should not be a player"""
     filtered = [
         p for p in room.players
         if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"
@@ -266,6 +267,7 @@ def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str)
     return (lo, (left, right))
 
 def _deal_opening_cards(code: str, room: Room):
+    """Deal opening cards to actual players only - Host is excluded from gameplay"""
     _cleanup_host_entries(room)
     if not room.players:
         raise ValueError("No players to deal")
@@ -277,6 +279,10 @@ def _deal_opening_cards(code: str, room: Room):
         raise ValueError("Not enough tracks to deal opening cards")
     dealt_ids: list[str] = []
     for player in room.players:
+        # Skip any host entries that might have slipped through
+        if player.is_host or player.id == room.hostId or player.id.upper() == "HOST":
+            logger.info(f"[deal] skipping host player {player.id}")
+            continue
         card = _draw_track_card(room)
         if not card:
             raise ValueError("Deck exhausted during deal")
@@ -286,12 +292,20 @@ def _deal_opening_cards(code: str, room: Room):
     logger.info(f"[deal] room={code} players={len(room.players)} dealt_ids={dealt_ids}")
 
 async def _begin_turn(code: str, room: Room):
+    """Begin a new turn for the next actual player - Host is excluded from turn rotation"""
     _cleanup_host_entries(room)
     if room.status == "finished" or not room.players:
         return
-    if room.turnIndex >= len(room.players):
+    
+    # Filter out any host entries from turn rotation
+    actual_players = [p for p in room.players if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"]
+    if not actual_players:
+        logger.warning(f"[begin_turn] no actual players found in room={code}")
+        return
+    
+    if room.turnIndex >= len(actual_players):
         room.turnIndex = 0
-    player = room.players[room.turnIndex]
+    player = actual_players[room.turnIndex]
     card = _draw_track_card(room)
     if not card:
         room.status = "finished"
@@ -319,14 +333,19 @@ async def _begin_turn(code: str, room: Room):
     logger.info(f"[emit turn:play] room={code} player={player.id} turnId={turn_id} song={card.get('trackId')}")
 
 async def _advance_turn(code: str, room: Room):
+    """Advance to the next actual player's turn - Host is excluded from turn rotation"""
     if room.status == "finished":
         return
     _cleanup_host_entries(room)
-    if not room.players:
+    
+    # Filter out any host entries from turn rotation
+    actual_players = [p for p in room.players if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"]
+    if not actual_players:
         room.status = "finished"
         await broadcast(code, "game:finish", {"winnerId": room.winnerId})
         return
-    room.turnIndex = (room.turnIndex + 1) % len(room.players)
+    
+    room.turnIndex = (room.turnIndex + 1) % len(actual_players)
     room.turn = None
     room.status = "playing"
     await _begin_turn(code, room)
@@ -401,10 +420,13 @@ async def ws_room(ws: WebSocket, code: str):
             if event == "join":
                 p = Player(**data)
                 p.is_host = bool(data.get("is_host", False))
+                # Host joins but is not added to players list - they just get room updates
                 if p.is_host or p.id == room.hostId or p.id.upper() == "HOST":
+                    logger.info(f"[join] host {p.id} connected to room {code}")
                     _cleanup_host_entries(room)
                     await _broadcast_room_snapshot(code, room)
                     continue
+                # Regular players get added to the game
                 used = {pl.seat for pl in room.players}
                 seat = 0
                 while seat in used:
@@ -424,7 +446,9 @@ async def ws_room(ws: WebSocket, code: str):
                     await broadcast(code, "game:error", {"message": "Game already started or finished."})
                     continue
                 _cleanup_host_entries(room)
-                if len(room.players) < 2:
+                # Count only actual players (exclude any host entries)
+                actual_players = [p for p in room.players if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"]
+                if len(actual_players) < 2:
                     await broadcast(code, "game:error", {"message": "Need at least 2 players to start."})
                     continue
                 tie_policy = data.get("tiePolicy")
@@ -446,9 +470,11 @@ async def ws_room(ws: WebSocket, code: str):
                     "used": set(),
                     "discard": set(),
                 }
+                # Reset only actual players (exclude host)
                 for p in room.players:
-                    p.timeline = []
-                    p.score = 0
+                    if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST":
+                        p.timeline = []
+                        p.score = 0
                 room.turnIndex = 0
                 room.turn = None
                 room.status = "setup"
@@ -1013,6 +1039,9 @@ async def confirm_position(payload: ConfirmPositionPayload):
     player = _get_player(room, payload.playerId)
     if not player:
         return Response("Player not found", status_code=404)
+    # Ensure the player is not a host
+    if player.is_host or player.id == room.hostId or player.id.upper() == "HOST":
+        return Response("Host cannot play", status_code=403)
 
     idx, allowed_range = _compute_insert_position(player.timeline, card, room.tiePolicy)
     insert_index = idx
@@ -1052,7 +1081,8 @@ async def confirm_position(payload: ConfirmPositionPayload):
                 "placedTrack": card,
             }
         )
-        if player.score >= 10:
+        # Check win condition only for actual players
+        if player.score >= 10 and not player.is_host and player.id != room.hostId and player.id.upper() != "HOST":
             room.status = "finished"
             room.winnerId = player.id
     else:
