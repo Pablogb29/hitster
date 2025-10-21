@@ -1274,10 +1274,6 @@ async def confirm_position(payload: ConfirmPositionPayload):
         room.turn.drawn = None
         room.turn.play_started = False
         
-        # Check win condition
-        if player.score >= room.targetPoints:
-            room.winnerId = player.id
-            room.status = "postGame"
         result_payload.update(
             {
                 "correct": True,
@@ -1297,8 +1293,14 @@ async def confirm_position(payload: ConfirmPositionPayload):
                 ],
             }
         )
-        # Emit gameOver event if win condition is met
+        
+        # Check win condition - only for actual players (not hosts)
+        logger.info(f"[win_check] player={player.id} score={player.score} target={room.targetPoints} is_host={player.is_host} hostId={room.hostId}")
         if player.score >= room.targetPoints and not player.is_host and player.id != room.hostId and player.id.upper() != "HOST":
+            logger.info(f"[WIN_CONDITION_MET] player={player.id} score={player.score} target={room.targetPoints}")
+            room.winnerId = player.id
+            room.status = "postGame"
+            
             # Create ranking sorted by score
             ranking = sorted(room.players, key=lambda p: p.score, reverse=True)
             ranking_info = [
