@@ -167,6 +167,11 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       const turn = action.payload.turn;
       const me = players.find((p) => p.id === state.meId);
       const ghostIndex = me ? me.timeline.length : 0;
+      
+      // Preserve drawnCard if it exists and we're in the same turn
+      const preserveDrawnCard = state.drawnCard && turn?.turnId === state.turnId;
+      console.log("[ROOM_INIT] preserveDrawnCard:", preserveDrawnCard, "state.drawnCard:", state.drawnCard, "turn.turnId:", turn?.turnId, "state.turnId:", state.turnId);
+      
       return {
         ...state,
         roomCode: action.payload.code || state.roomCode,
@@ -175,7 +180,7 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         turnId: turn?.turnId ?? null,
         currentPlayerId: turn?.currentPlayerId ?? null,
         turnPhase: turn?.phase ?? null,
-        drawnCard: null,
+        drawnCard: preserveDrawnCard ? state.drawnCard : null,
         ghostIndex,
         playInFlight: false,
         confirmInFlight: false,
