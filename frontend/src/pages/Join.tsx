@@ -594,19 +594,20 @@ export default function Join() {
         items.push(
           <div
             key={`ghost-${i}`}
-            className="rounded border border-emerald-400/70 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200"
+            className="rounded-xl border-2 border-dashed border-emerald-400/70 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-4 py-3 text-sm text-emerald-200"
           >
-            Hidden card position
+            <div className="font-semibold">🎵 Hidden Card Position</div>
+            <div className="text-emerald-300/70">Place the song here</div>
           </div>
         );
       }
       if (i < length) {
         const card = mePlayer.timeline[i];
         items.push(
-          <div key={`card-${card.trackId}-${i}`} className="rounded bg-zinc-800 px-3 py-2 text-sm">
-            <div className="text-emerald-300 font-semibold">{formatYear(card.release)}</div>
-            <div className="text-white/90">{card.name ?? "Revealed card"}</div>
-            <div className="text-white/60">{card.artist ?? ""}</div>
+          <div key={`card-${card.trackId}-${i}`} className="rounded-xl bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-400/30 px-4 py-3 text-sm">
+            <div className="text-blue-300 font-semibold text-xs mb-1">{formatYear(card.release)}</div>
+            <div className="text-white font-semibold">{card.name ?? "Revealed card"}</div>
+            <div className="text-white/70 text-xs">{card.artist ?? ""}</div>
           </div>
         );
       }
@@ -670,134 +671,155 @@ export default function Join() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white px-4 py-6">
-      <header className="mb-6 space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-semibold">{mePlayer.name}</h2>
-            <p className="text-sm text-zinc-400">Player ID: {mePlayer.id}</p>
-          </div>
-          <div className="text-right text-sm text-zinc-400">
-            <div>Score: <span className="text-white font-semibold">{mePlayer.score}</span></div>
-            <div>Cards: <span className="text-white font-semibold">{mePlayer.timeline.length}</span></div>
-          </div>
-        </div>
-        <div className="rounded bg-zinc-900/60 px-4 py-3 text-sm text-zinc-300">
-          <div>Phase: <span className="text-white font-semibold capitalize">{phaseLabel}</span></div>
-          <div>Status: <span className="text-white/90">{state.status || ""}</span></div>
-          <div className="mt-1 text-xs text-zinc-500">
-            ws:{" "}
-            <span className={wsStatus === "open" ? "text-emerald-400" : "text-yellow-400"}>{wsStatus}</span>{" "}
-            | turnId: {state.turnId ?? "-"} | current: {state.currentPlayerId ?? "-"} | ghostIndex: {state.ghostIndex}
-            {state.device ? ` | device: ${state.device.id}` : " | device: n/a"}
+    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white">
+      {/* Header */}
+      <div className="bg-black/20 backdrop-blur-sm border-b border-white/10">
+        <div className="px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-xl font-bold text-white">{mePlayer.name}</h1>
+              <div className="flex items-center gap-4 text-sm text-white/70">
+                <span>Score: <span className="font-semibold text-emerald-400">{mePlayer.score}</span></span>
+                <span>Cards: <span className="font-semibold text-blue-400">{mePlayer.timeline.length}</span></span>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
+              <div className="text-xs text-white/50 mt-1">Connected</div>
+            </div>
           </div>
         </div>
-      </header>
+      </div>
 
+      {/* Game Status */}
       {winner ? (
-        <div className="mb-4 rounded border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-emerald-200">
-          🎉 Game finished! Winner: <span className="font-semibold">{winner}</span>
+        <div className="mx-4 mt-4 rounded-2xl bg-gradient-to-r from-yellow-500/20 to-orange-500/20 border border-yellow-500/30 p-6 text-center">
+          <div className="text-4xl mb-2">🎉</div>
+          <div className="text-lg font-bold text-yellow-300">Game Finished!</div>
+          <div className="text-yellow-200">Winner: <span className="font-semibold">{winner}</span></div>
         </div>
       ) : null}
 
-      {!isMyTurn ? (
-        <div className="mb-6 rounded bg-zinc-900/70 px-4 py-8 text-center text-lg text-zinc-200">
-          Waiting… It’s {state.currentPlayerId ? state.players.find((p) => p.id === state.currentPlayerId)?.name ?? "another player" : "someone"}'s turn.
-        </div>
-      ) : state.turnPhase === "playing" ? (
-        <div className="mb-6 space-y-4 rounded bg-zinc-900/70 px-4 py-6">
-          <div className="text-sm text-zinc-400">Hidden card ready. Audio plays once you press Play.</div>
-          <button
-            onClick={handlePlay}
-            disabled={playDisabled}
-            className="w-full rounded bg-emerald-500 py-4 text-lg font-semibold text-black disabled:opacity-40"
-          >
-            {state.playInFlight ? "Loading…" : "Play Hidden Card"}
-          </button>
-          <div className="flex items-center justify-between text-xs text-zinc-500">
-            <span>Device: {deviceId ? deviceId : "not ready"}</span>
-            <button onClick={ensureActivation} className="rounded bg-zinc-800 px-2 py-1">Activate</button>
+      {/* Main Game Area */}
+      <div className="px-4 py-6 space-y-6">
+        {/* Turn Status */}
+        {!isMyTurn ? (
+          <div className="text-center py-8">
+            <div className="text-6xl mb-4">⏳</div>
+            <div className="text-xl font-semibold text-white/90 mb-2">Waiting for your turn</div>
+            <div className="text-white/60">
+              {state.currentPlayerId ? state.players.find((p) => p.id === state.currentPlayerId)?.name ?? "Another player" : "Someone"} is playing
+            </div>
           </div>
-        </div>
-      ) : state.turnPhase === "placing" ? (
-        <div className="mb-6 space-y-4 rounded bg-zinc-900/70 px-4 py-6">
-          <div className="text-sm text-zinc-400">Use ↑ / ↓ to position the hidden card, then confirm.</div>
-          <div className="flex items-center justify-center gap-3">
+        ) : state.turnPhase === "playing" ? (
+          <div className="text-center py-8">
+            <div className="text-6xl mb-4">🎵</div>
+            <div className="text-xl font-semibold text-white mb-4">Your Turn!</div>
+            <div className="text-white/70 mb-6">Listen to the hidden song and place it in your timeline</div>
             <button
-              onClick={() => moveGhost(-1)}
-              disabled={placementDisabled}
-              className="h-14 w-20 rounded-full bg-zinc-800 text-2xl disabled:opacity-40"
+              onClick={handlePlay}
+              disabled={playDisabled}
+              className="w-full bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 disabled:from-gray-500 disabled:to-gray-600 text-black font-bold py-4 px-8 rounded-2xl text-lg transition-all duration-200 disabled:opacity-50"
             >
-              ↑
+              {state.playInFlight ? "🎵 Loading..." : "🎵 Play Hidden Card"}
             </button>
-            <button
-              onClick={() => moveGhost(1)}
-              disabled={placementDisabled}
-              className="h-14 w-20 rounded-full bg-zinc-800 text-2xl disabled:opacity-40"
-            >
-              ↓
-            </button>
+            {!deviceId && (
+              <button 
+                onClick={ensureActivation} 
+                className="mt-3 bg-blue-500/20 text-blue-300 px-4 py-2 rounded-lg text-sm border border-blue-500/30"
+              >
+                Activate Spotify
+              </button>
+            )}
+          </div>
+        ) : state.turnPhase === "placing" ? (
+          <div className="text-center py-8">
+            <div className="text-6xl mb-4">📍</div>
+            <div className="text-xl font-semibold text-white mb-4">Place the Card!</div>
+            <div className="text-white/70 mb-6">Use the arrows to position the song in your timeline</div>
+            <div className="flex items-center justify-center gap-4">
+              <button
+                onClick={() => moveGhost(-1)}
+                disabled={placementDisabled}
+                className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:from-gray-500 disabled:to-gray-600 text-white text-2xl font-bold transition-all duration-200 disabled:opacity-50"
+              >
+                ↑
+              </button>
+              <button
+                onClick={() => moveGhost(1)}
+                disabled={placementDisabled}
+                className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:from-gray-500 disabled:to-gray-600 text-white text-2xl font-bold transition-all duration-200 disabled:opacity-50"
+              >
+                ↓
+              </button>
+            </div>
             <button
               onClick={handleConfirm}
               disabled={placementDisabled}
-              className="h-14 flex-1 rounded bg-emerald-500 text-lg font-semibold text-black disabled:opacity-40"
+              className="w-full mt-6 bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 disabled:from-gray-500 disabled:to-gray-600 text-black font-bold py-4 px-8 rounded-2xl text-lg transition-all duration-200 disabled:opacity-50"
             >
-              {state.confirmInFlight ? "Checking…" : "Confirm"}
+              {state.confirmInFlight ? "🎯 Checking..." : "🎯 Confirm Position"}
             </button>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      <section className="mb-6 space-y-3">
-        <div className="text-sm text-zinc-400">Your timeline (chronological)</div>
-        <div className="grid gap-2">
-          {ghostElements.length > 0 ? ghostElements : (
-            <div className="rounded bg-zinc-900/60 px-3 py-4 text-center text-zinc-400">No cards yet. Place the hidden card to start your timeline.</div>
-          )}
-        </div>
-      </section>
-
-      <section className="space-y-2">
-        <div className="text-sm text-zinc-400">Players</div>
-        <div className="grid gap-2">
-          <div className="flex items-center justify-between rounded bg-zinc-900/70 px-3 py-2">
-            <div className="font-semibold text-white">{mePlayer.name} (you)</div>
-            <div className="text-sm text-zinc-400">Score {mePlayer.score} • Cards {mePlayer.timeline.length}</div>
+        {/* Your Timeline */}
+        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
+          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span>📅</span> Your Timeline
+          </h2>
+          <div className="space-y-3">
+            {ghostElements.length > 0 ? ghostElements : (
+              <div className="text-center py-8 text-white/60">
+                <div className="text-4xl mb-2">🎵</div>
+                <div>No cards yet</div>
+                <div className="text-sm">Place the hidden card to start your timeline</div>
+              </div>
+            )}
           </div>
-          {otherPlayers.map((p) => (
-            <div key={p.id} className="flex items-center justify-between rounded bg-zinc-900/40 px-3 py-2 text-sm">
-              <div className="text-white/90">{p.name}</div>
-              <div className="text-zinc-500">Score {p.score} • Cards {p.timeline.length}</div>
-            </div>
-          ))}
         </div>
-      </section>
 
-      <footer className="mt-8 space-y-3 text-xs text-zinc-500">
-        <div>Room: {state.roomCode || code}</div>
-        <div>Host: {state.hostId || "n/a"}</div>
-        <div>Last result: {state.lastResult ? `${state.lastResult.message} (${state.lastResult.turnId})` : "-"}</div>
-        <div className="pt-2">
-          <button
-            className="rounded bg-zinc-800 px-2 py-1"
-            onClick={async () => {
-              try {
-                await fetch(`${API_BASE}/api/turn/next`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  credentials: "include",
-                  body: JSON.stringify({ roomCode: state.roomCode }),
-                });
-                dispatch({ type: "SET_STATUS", payload: { status: "Requested next turn (dev)." } });
-              } catch (err: any) {
-                dispatch({ type: "SET_STATUS", payload: { status: `next turn error: ${err?.message || err}` } });
-              }
-            }}
-          >
-            Dev: Next turn
-          </button>
+        {/* Players */}
+        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
+          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span>👥</span> Players
+          </h2>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500/20 to-green-500/20 rounded-xl p-4 border border-emerald-500/30">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-green-400 flex items-center justify-center text-black font-bold text-sm">
+                  {mePlayer.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div className="font-semibold text-white">{mePlayer.name}</div>
+                  <div className="text-xs text-emerald-300">You</div>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm text-emerald-300">Score: {mePlayer.score}</div>
+                <div className="text-sm text-blue-300">Cards: {mePlayer.timeline.length}</div>
+              </div>
+            </div>
+            {otherPlayers.map((p) => (
+              <div key={p.id} className="flex items-center justify-between bg-white/5 rounded-xl p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-400 flex items-center justify-center text-white font-bold text-sm">
+                    {p.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white/90">{p.name}</div>
+                    <div className="text-xs text-white/50">Player</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm text-white/70">Score: {p.score}</div>
+                  <div className="text-sm text-white/70">Cards: {p.timeline.length}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-      </footer>
+      </div>
     </div>
   );
 }
