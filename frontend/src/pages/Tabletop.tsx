@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { connectWS, WSEvent } from '../lib/ws';
-import { TabletopRoom, PlayerState, HiddenCardState } from '../tabletop/types';
+import { connectWS } from '../lib/ws';
+import type { WSEvent } from '../lib/ws';
+import type { TabletopRoom, HiddenCardState } from '../tabletop/types';
 
 type TabletopState = {
   room: TabletopRoom | null;
@@ -49,7 +50,6 @@ const tabletopReducer = (state: TabletopState, action: TabletopAction): Tabletop
         hiddenCard: state.hiddenCard ? { ...state.hiddenCard, stage: "active" } : null,
       };
     case "TURN_RESULT": {
-      const player = state.room?.players.find(p => p.id === action.payload.playerId);
       return {
         ...state,
         hiddenCard: state.hiddenCard ? { 
@@ -122,12 +122,12 @@ export default function Tabletop() {
 
   const currentPlayer = useMemo(() => {
     if (!state.room?.turn) return null;
-    return state.room.players.find(p => p.id === state.room.turn.currentPlayerId);
+    return state.room?.players.find(p => p.id === state.room?.turn?.currentPlayerId);
   }, [state.room]);
 
   const winner = useMemo(() => {
     if (!state.room?.winnerId) return null;
-    return state.room.players.find(p => p.id === state.room.winnerId);
+    return state.room.players.find(p => p.id === state.room?.winnerId);
   }, [state.room]);
 
   if (!state.room) {
@@ -169,7 +169,7 @@ export default function Tabletop() {
             {state.room.players.map((player, index) => {
               const isCurrentPlayer = currentPlayer?.id === player.id;
               const isWinner = winner?.id === player.id;
-              const angle = (index * 360) / state.room.players.length;
+              const angle = (index * 360) / (state.room?.players.length || 1);
               const radius = 200;
               const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
               const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
@@ -247,7 +247,7 @@ export default function Tabletop() {
                     </div>
                     {state.hiddenCard.track && (
                       <div className="mt-2 text-xs text-purple-300">
-                        {state.hiddenCard.track.release?.year || 'Unknown Year'}
+                        {state.hiddenCard.track.release?.date || 'Unknown Year'}
                       </div>
                     )}
                   </div>
