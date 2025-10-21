@@ -142,15 +142,15 @@ export default function Tabletop() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-100 to-amber-200 text-zinc-900">
+    <div className="h-screen w-screen bg-gradient-to-br from-amber-100 to-amber-200 text-zinc-900 overflow-hidden">
       {/* Header */}
-      <div className="absolute top-4 left-4 z-20">
-        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-4 py-2 shadow-lg">
+      <div className="absolute top-2 left-2 z-20">
+        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1 shadow-lg">
           <div className="flex items-center gap-2">
-            <div className="text-2xl">🎵</div>
+            <div className="text-xl">🎵</div>
             <div>
-              <div className="font-bold text-lg">Hitster Tabletop</div>
-              <div className="text-sm text-zinc-600">Room: {state.room.code}</div>
+              <div className="font-bold text-sm">Hitster Tabletop</div>
+              <div className="text-xs text-zinc-600">Room: {state.room.code}</div>
             </div>
           </div>
         </div>
@@ -158,15 +158,15 @@ export default function Tabletop() {
 
       {/* Connection Status */}
       {state.wsConnected && (
-        <div className="absolute top-4 right-4 z-20">
-          <div className="bg-emerald-500 text-white px-3 py-1 rounded-full text-sm font-medium">
+        <div className="absolute top-2 right-2 z-20">
+          <div className="bg-emerald-500 text-white px-2 py-1 rounded-full text-xs font-medium">
             ● Connected
           </div>
         </div>
       )}
 
       {/* Full Screen Game Table */}
-      <div className="absolute inset-0 p-4">
+      <div className="absolute inset-0 p-2">
         {/* Rectangular Wooden Table Surface */}
         <div 
           className="absolute inset-0 rounded-2xl shadow-2xl"
@@ -194,7 +194,7 @@ export default function Tabletop() {
           // Smart positioning based on number of players
           let position = { x: 0, y: 0, rotation: 0 };
           const totalPlayers = state.room?.players.length || 0;
-          const margin = 100;
+          const margin = 15; // Reduced margin to fit screen
           
           if (totalPlayers === 2) {
             // Two players: face to face
@@ -226,14 +226,14 @@ export default function Tabletop() {
           } else if (totalPlayers === 5) {
             // Five players: pentagon
             const angle = (index * 360) / 5;
-            const radius = 35;
+            const radius = 30;
             const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
             const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
             position = { x: 50 + x, y: 50 + y, rotation: angle };
           } else {
             // Six or more players: circle
             const angle = (index * 360) / totalPlayers;
-            const radius = 40;
+            const radius = 35;
             const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
             const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
             position = { x: 50 + x, y: 50 + y, rotation: angle };
@@ -250,54 +250,54 @@ export default function Tabletop() {
               }}
             >
               {/* Player Name */}
-              <div className="text-center mb-4">
+              <div className="text-center mb-2">
                 <div className={`
-                  inline-block px-6 py-3 rounded-full text-lg font-bold
+                  inline-block px-3 py-1 rounded-full text-sm font-bold
                   ${isCurrentPlayer ? 'bg-emerald-500 text-white' : 'bg-white/90 text-zinc-800'}
                   ${isWinner ? 'ring-2 ring-yellow-400' : ''}
                   shadow-lg
                 `}>
                   {player.name}
-                  {isCurrentPlayer && <span className="ml-2">⚡</span>}
-                  {isWinner && <span className="ml-2">👑</span>}
+                  {isCurrentPlayer && <span className="ml-1">⚡</span>}
+                  {isWinner && <span className="ml-1">👑</span>}
                 </div>
               </div>
 
               {/* Player's Timeline Cards - Horizontal Layout */}
-              <div className="flex items-center space-x-2">
-                {player.timeline.slice(0, 5).map((card, cardIndex) => (
+              <div className="flex items-center space-x-1">
+                {player.timeline.slice(0, 4).map((card, cardIndex) => (
                   <div
                     key={`${card.trackId}-${cardIndex}`}
-                    className="w-28 h-20 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-2 transform hover:scale-105 transition-transform"
+                    className="w-20 h-14 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
                     style={{
                       background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
                       boxShadow: '0 4px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.8)'
                     }}
                     title={`${card.name} - ${card.artist} (${card.release?.date?.split('-')[0] || 'Unknown Year'})`}
                   >
-                    <div className="text-sm font-bold text-zinc-800 text-center leading-tight mb-1">
-                      {card.name || 'Unknown Song'}
+                    <div className="text-xs font-bold text-zinc-800 text-center leading-tight mb-1">
+                      {card.name?.split(' ').slice(0, 2).join(' ') || 'Unknown Song'}
                     </div>
                     <div className="text-xs text-zinc-600 text-center leading-tight">
-                      {card.artist || 'Unknown Artist'}
+                      {card.artist?.split(' ').slice(0, 1).join(' ') || 'Unknown Artist'}
                     </div>
                     <div className="text-xs text-zinc-500 mt-1">
                       {card.release?.date?.split('-')[0] || 'Unknown Year'}
                     </div>
                   </div>
                 ))}
-                {player.timeline.length > 5 && (
-                  <div className="w-28 h-20 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
-                    <div className="text-sm font-bold text-zinc-600 text-center">
-                      +{player.timeline.length - 5}
+                {player.timeline.length > 4 && (
+                  <div className="w-20 h-14 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
+                    <div className="text-xs font-bold text-zinc-600 text-center">
+                      +{player.timeline.length - 4}
                     </div>
                   </div>
                 )}
               </div>
 
               {/* Player Score */}
-              <div className="text-center mt-3">
-                <div className="text-lg font-bold text-zinc-800 bg-white/80 px-3 py-1 rounded-full shadow-md">
+              <div className="text-center mt-1">
+                <div className="text-sm font-bold text-zinc-800 bg-white/80 px-2 py-1 rounded-full shadow-md">
                   Score: {player.score}
                 </div>
               </div>
@@ -311,14 +311,14 @@ export default function Tabletop() {
             <div className="relative">
               {/* Hidden Card */}
               <div 
-                className="w-24 h-16 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-2 transform hover:scale-110 transition-transform"
+                className="w-20 h-14 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-1 transform hover:scale-110 transition-transform"
                 style={{
                   background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 50%, #6D28D9 100%)',
                   boxShadow: '0 8px 16px rgba(139, 92, 246, 0.4), inset 0 1px 0 rgba(255,255,255,0.3)'
                 }}
               >
                 <div className="text-white text-center">
-                  <div className="text-lg mb-1">🎵</div>
+                  <div className="text-sm mb-1">🎵</div>
                   <div className="text-xs font-bold leading-tight">Hidden Card</div>
                   <div className="text-xs mt-1 opacity-90">
                     {state.hiddenCard.stage === "incoming" && "Ready"}
@@ -371,21 +371,21 @@ export default function Tabletop() {
       </div>
 
       {/* Game Status Bar */}
-      <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20">
-        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-6 py-3 shadow-lg">
+      <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 z-20">
+        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-4 py-2 shadow-lg">
           <div className="text-center">
             {state.room.status === "playing" && currentPlayer && (
-              <div className="text-lg font-bold text-zinc-800">
+              <div className="text-sm font-bold text-zinc-800">
                 It's <span className="text-emerald-600">{currentPlayer.name}</span>'s turn
               </div>
             )}
             {state.room.status === "finished" && winner && (
-              <div className="text-lg font-bold text-zinc-800">
+              <div className="text-sm font-bold text-zinc-800">
                 🎉 <span className="text-yellow-600">{winner.name}</span> wins!
               </div>
             )}
             {state.room.status === "lobby" && (
-              <div className="text-lg font-bold text-zinc-800">
+              <div className="text-sm font-bold text-zinc-800">
                 Waiting for players to join...
               </div>
             )}
