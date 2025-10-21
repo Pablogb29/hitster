@@ -202,14 +202,8 @@ export default function Lobby() {
           return;
         }
 
-        // Otherwise create a new room
-        dispatch({ type: "SET_STATUS", status: "Creating room..." });
-        console.log("[Lobby] Creating room with targetPoints:", state.targetPoints);
-        const resp = await fetch(`${API_BASE}/api/create-room?targetPoints=${state.targetPoints}`);
-        if (!resp.ok) throw new Error(`Failed to create room: ${resp.status}`);
-        const data = await resp.json();
-
-        await connectToRoom(data.code, data.hostId);
+        // Don't create room automatically - wait for user to start game
+        dispatch({ type: "SET_STATUS", status: "Ready to start game" });
       } catch (err: any) {
         dispatch({ type: "SET_STATUS", status: `Error: ${err.message}` });
       }
@@ -312,6 +306,43 @@ export default function Lobby() {
     }
 
     try {
+      // First create the room if we don't have one
+      if (!state.roomCode || !state.hostId) {
+        dispatch({ type: "SET_STATUS", status: "Creating room..." });
+        console.log("[Lobby] Creating room with targetPoints:", state.targetPoints);
+        const resp = await fetch(`${API_BASE}/api/create-room?targetPoints=${state.targetPoints}`);
+        if (!resp.ok) throw new Error(`Failed to create room: ${resp.status}`);
+        const data = await resp.json();
+
+        // Connect to the new room
+        dispatch({ type: "SET_STATUS", status: `Connecting to room ${data.code}...` });
+        dispatch({ type: "SET_ROOM_CODE", code: data.code });
+        dispatch({ type: "SET_HOST_ID", hostId: data.hostId });
+        sessionStorage.setItem("hitster_roomCode", data.code);
+        sessionStorage.setItem("hitster_hostId", data.hostId);
+
+        const conn = connectWS(data.code, handleWsEvent);
+        connRef.current = conn;
+        conn.ws.addEventListener("open", () => {
+          dispatch({ type: "SET_WS_CONNECTED", connected: true });
+          dispatch({ type: "SET_STATUS", status: "Connected to room" });
+          // Join as host (host is not added as a player on the server)
+          conn.send("join", { id: data.hostId, name: "Host", is_host: true });
+        });
+
+        conn.ws.addEventListener("close", () => {
+          dispatch({ type: "SET_WS_CONNECTED", connected: false });
+        });
+
+        // Generate QR code
+        const QRCode = (await import("qrcode")).default;
+        const qr = await QRCode.toDataURL(`${window.location.origin}/join?code=${data.code}`);
+        setQrCode(qr);
+
+        // Wait a moment for connection to establish
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
       dispatch({ type: "SET_STATUS", status: "Starting game..." });
       
       const selectedPlaylist = state.playlists.find(p => p.id === state.selectedPlaylistId);
@@ -328,7 +359,7 @@ export default function Lobby() {
     } catch (err: any) {
       dispatch({ type: "SET_STATUS", status: `Failed to start game: ${err.message}` });
     }
-  }, [state.spotifyLinked, state.selectedPlaylistId, state.players.length, state.hostId, state.playlists, state.tiePolicy]);
+  }, [state.spotifyLinked, state.selectedPlaylistId, state.players.length, state.hostId, state.playlists, state.tiePolicy, state.targetPoints, state.roomCode, handleWsEvent]);
 
   // Navigate to tabletop when game starts
   useEffect(() => {
