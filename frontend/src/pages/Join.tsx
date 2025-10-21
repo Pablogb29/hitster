@@ -101,6 +101,7 @@ type JoinAction =
   | { type: "TURN_PLACING"; payload: { turnId: string } }
   | { type: "TURN_RESULT"; payload: TurnResultEvent }
   | { type: "GAME_FINISH"; payload: { winnerId: string } }
+  | { type: "GAME_ERROR"; payload: { message: string } }
   | { type: "PLAY_REQUEST" }
   | { type: "PLAY_FINISH"; payload: { status: string } }
   | { type: "PLAY_FAILURE"; payload: { status: string } }
@@ -306,6 +307,13 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
           ? `Game finished! Winner: ${action.payload.winnerId}`
           : "Game finished",
       };
+    case "GAME_ERROR":
+      return {
+        ...state,
+        status: `Game error: ${action.payload.message}`,
+        playInFlight: false,
+        confirmInFlight: false,
+      };
     case "SET_STATUS":
       return { ...state, status: action.payload.status };
     case "SET_DEVICE":
@@ -374,6 +382,9 @@ export default function Join() {
         break;
       case "game:finish":
         dispatch({ type: "GAME_FINISH", payload: evt.data });
+        break;
+      case "game:error":
+        dispatch({ type: "GAME_ERROR", payload: evt.data });
         break;
       default:
         break;
@@ -685,6 +696,16 @@ export default function Join() {
           <div className="text-4xl mb-2">🎉</div>
           <div className="text-lg font-bold text-yellow-300">Game Finished!</div>
           <div className="text-yellow-200">Winner: <span className="font-semibold">{winner}</span></div>
+        </div>
+      ) : null}
+
+      {/* Game Error */}
+      {state.status && state.status.includes("Game error") ? (
+        <div className="mx-4 mt-4 rounded-2xl bg-gradient-to-r from-red-500/20 to-pink-500/20 border border-red-500/30 p-6 text-center">
+          <div className="text-4xl mb-2">⚠️</div>
+          <div className="text-lg font-bold text-red-300">Cannot Join Game</div>
+          <div className="text-red-200">{state.status}</div>
+          <div className="text-red-200/70 text-sm mt-2">Please join a new game or wait for the current one to finish.</div>
         </div>
       ) : null}
 
