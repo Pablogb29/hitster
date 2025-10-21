@@ -202,7 +202,14 @@ export default function Lobby() {
           return;
         }
 
-        // Don't create room automatically - wait for user to start game
+        // Generate hostId immediately for Spotify login, but don't create room yet
+        if (reuseHostId) {
+          dispatch({ type: "SET_HOST_ID", hostId: reuseHostId });
+        } else {
+          const newHostId = `host-${Math.random().toString(36).slice(2, 6)}`;
+          dispatch({ type: "SET_HOST_ID", hostId: newHostId });
+          sessionStorage.setItem("hitster_hostId", newHostId);
+        }
         dispatch({ type: "SET_STATUS", status: "Ready to start game" });
       } catch (err: any) {
         dispatch({ type: "SET_STATUS", status: `Error: ${err.message}` });
@@ -307,7 +314,7 @@ export default function Lobby() {
 
     try {
       // First create the room if we don't have one
-      if (!state.roomCode || !state.hostId) {
+      if (!state.roomCode) {
         dispatch({ type: "SET_STATUS", status: "Creating room..." });
         console.log("[Lobby] Creating room with targetPoints:", state.targetPoints);
         const resp = await fetch(`${API_BASE}/api/create-room?targetPoints=${state.targetPoints}`);
@@ -317,9 +324,8 @@ export default function Lobby() {
         // Connect to the new room
         dispatch({ type: "SET_STATUS", status: `Connecting to room ${data.code}...` });
         dispatch({ type: "SET_ROOM_CODE", code: data.code });
-        dispatch({ type: "SET_HOST_ID", hostId: data.hostId });
+        // Use the existing hostId (generated earlier), not the one from the API
         sessionStorage.setItem("hitster_roomCode", data.code);
-        sessionStorage.setItem("hitster_hostId", data.hostId);
 
         const conn = connectWS(data.code, handleWsEvent);
         connRef.current = conn;
@@ -327,7 +333,7 @@ export default function Lobby() {
           dispatch({ type: "SET_WS_CONNECTED", connected: true });
           dispatch({ type: "SET_STATUS", status: "Connected to room" });
           // Join as host (host is not added as a player on the server)
-          conn.send("join", { id: data.hostId, name: "Host", is_host: true });
+          conn.send("join", { id: state.hostId, name: "Host", is_host: true });
         });
 
         conn.ws.addEventListener("close", () => {
