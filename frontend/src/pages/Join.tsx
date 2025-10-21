@@ -92,6 +92,9 @@ type JoinInternalState = {
   winnerId: string | null;
   device: { id: string; name?: string } | null;
   showScoreboard: boolean;
+  newGameTargetPoints: number;
+  myVote: "YES" | "NO" | null;
+  voteStatus: { yes: number; no: number; needed: number } | null;
 };
 
 type JoinAction =
@@ -114,7 +117,13 @@ type JoinAction =
   | { type: "SET_DRAWN"; payload: TrackCard | null }
   | { type: "SET_GHOST_INDEX"; payload: number }
   | { type: "SHOW_SCOREBOARD" }
-  | { type: "HIDE_SCOREBOARD" };
+  | { type: "HIDE_SCOREBOARD" }
+  | { type: "SET_NEW_GAME_TARGET_POINTS"; targetPoints: number }
+  | { type: "SET_MY_VOTE"; vote: "YES" | "NO" | null }
+  | { type: "SET_VOTE_STATUS"; voteStatus: { yes: number; no: number; needed: number } }
+  | { type: "GAME_OVER"; payload: { ranking: any[]; winnerId: string; targetPoints: number } }
+  | { type: "WINNER_DECIDING"; payload: { winnerId: string } }
+  | { type: "NEW_GAME_STARTED"; payload: { config: { playlistId: string; targetPoints: number } } };
 
 const createInitialState = (meId: string): JoinInternalState => ({
   roomCode: "",
@@ -134,6 +143,9 @@ const createInitialState = (meId: string): JoinInternalState => ({
   winnerId: null,
   device: null,
   showScoreboard: false,
+  newGameTargetPoints: 10,
+  myVote: null,
+  voteStatus: null,
 });
 
 const formatYear = (release?: Release) => {
@@ -322,6 +334,40 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       return { ...state, showScoreboard: true };
     case "HIDE_SCOREBOARD":
       return { ...state, showScoreboard: false };
+    case "SET_NEW_GAME_TARGET_POINTS":
+      return { ...state, newGameTargetPoints: action.targetPoints };
+    case "SET_MY_VOTE":
+      return { ...state, myVote: action.vote };
+    case "SET_VOTE_STATUS":
+      return { ...state, voteStatus: action.voteStatus };
+    case "GAME_OVER":
+      return { 
+        ...state, 
+        showScoreboard: true, 
+        winnerId: action.payload.winnerId,
+        players: action.payload.ranking 
+      };
+    case "WINNER_DECIDING":
+      return { ...state, winnerId: action.payload.winnerId };
+    case "NEW_GAME_STARTED":
+      return { 
+        ...state, 
+        showScoreboard: false,
+        newGameTargetPoints: action.payload.config.targetPoints,
+        myVote: null,
+        voteStatus: null,
+        winnerId: null,
+        players: [],
+        turnId: null,
+        currentPlayerId: null,
+        turnPhase: null,
+        drawnCard: null,
+        ghostIndex: 0,
+        playInFlight: false,
+        confirmInFlight: false,
+        playConfirmed: false,
+        status: "New game started!"
+      };
     case "SET_STATUS":
       return { ...state, status: action.payload.status };
     case "SET_DEVICE":
@@ -393,6 +439,18 @@ export default function Join() {
         break;
       case "game:error":
         dispatch({ type: "GAME_ERROR", payload: evt.data });
+        break;
+      case "gameOver":
+        dispatch({ type: "GAME_OVER", payload: evt.data });
+        break;
+      case "winnerDeciding":
+        dispatch({ type: "WINNER_DECIDING", payload: evt.data });
+        break;
+      case "voteStatus":
+        dispatch({ type: "SET_VOTE_STATUS", voteStatus: evt.data });
+        break;
+      case "newGameStarted":
+        dispatch({ type: "NEW_GAME_STARTED", payload: evt.data });
         break;
       default:
         break;
@@ -585,6 +643,33 @@ export default function Join() {
       dispatch({ type: "SET_STATUS", payload: { status: `Next turn error: ${err?.message || err}` } });
     }
   }, [state.roomCode]);
+
+  const handleNewGame = useCallback(async () => {
+    if (!state.roomCode || !connRef.current) return;
+    
+    try {
+      await connRef.current.send("newGameRequest", {
+        playerId: state.meId,
+        targetPoints: state.newGameTargetPoints
+      });
+    } catch (err: any) {
+      dispatch({ type: "SET_STATUS", payload: { status: `New game error: ${err?.message || err}` } });
+    }
+  }, [state.roomCode, state.meId, state.newGameTargetPoints]);
+
+  const handleVoteReplay = useCallback(async (vote: "YES" | "NO") => {
+    if (!state.roomCode || !connRef.current) return;
+    
+    try {
+      await connRef.current.send("voteReplay", {
+        playerId: state.meId,
+        vote: vote
+      });
+      dispatch({ type: "SET_MY_VOTE", vote });
+    } catch (err: any) {
+      dispatch({ type: "SET_STATUS", payload: { status: `Vote error: ${err?.message || err}` } });
+    }
+  }, [state.roomCode, state.meId]);
 
   const moveGhost = useCallback(
     (delta: number) => {
@@ -930,25 +1015,72 @@ export default function Join() {
                 ))}
             </div>
 
-            <div className="text-center">
-              <button
-                onClick={() => dispatch({ type: "HIDE_SCOREBOARD" })}
-                className="bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 text-white font-bold py-3 px-8 rounded-2xl text-lg transition-all duration-200 mr-4"
-              >
-                🎮 Continue Playing
-              </button>
-              {state.meId === state.hostId && (
-                <button
-                  onClick={() => {
-                    // Navigate to new game - this would need to be implemented
-                    window.location.href = "/host";
-                  }}
-                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-bold py-3 px-8 rounded-2xl text-lg transition-all duration-200"
-                >
-                  🆕 New Game
-                </button>
-              )}
-            </div>
+            {/* Winner Controls */}
+            {state.winnerId === state.meId ? (
+              <div className="text-center">
+                <div className="mb-6">
+                  <h3 className="text-xl font-semibold text-white mb-4">🎮 You Won! Start a New Game</h3>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-white/80 mb-2">Target Points</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={state.newGameTargetPoints || 10}
+                        onChange={(e) => dispatch({ type: "SET_NEW_GAME_TARGET_POINTS", targetPoints: parseInt(e.target.value) || 10 })}
+                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <button
+                      onClick={handleNewGame}
+                      className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-bold py-3 px-8 rounded-2xl text-lg transition-all duration-200"
+                    >
+                      🆕 Start New Game
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center">
+                <div className="mb-6">
+                  <h3 className="text-xl font-semibold text-white mb-4">⏳ Winner is Deciding...</h3>
+                  <p className="text-white/70 mb-4">The winner is choosing the next game settings</p>
+                  
+                  {/* Replay Vote */}
+                  <div className="bg-white/10 rounded-2xl p-6 border border-white/20">
+                    <h4 className="text-lg font-semibold text-white mb-4">Vote to Replay</h4>
+                    <div className="flex gap-4 justify-center mb-4">
+                      <button
+                        onClick={() => handleVoteReplay("YES")}
+                        className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                          state.myVote === "YES"
+                            ? "bg-emerald-500 text-white"
+                            : "bg-white/20 text-white/80 hover:bg-emerald-500/20"
+                        }`}
+                      >
+                        ✅ YES
+                      </button>
+                      <button
+                        onClick={() => handleVoteReplay("NO")}
+                        className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                          state.myVote === "NO"
+                            ? "bg-red-500 text-white"
+                            : "bg-white/20 text-white/80 hover:bg-red-500/20"
+                        }`}
+                      >
+                        ❌ NO
+                      </button>
+                    </div>
+                    {state.voteStatus && (
+                      <div className="text-sm text-white/70">
+                        Votes: {state.voteStatus.yes} YES / {state.voteStatus.no} NO (need {state.voteStatus.needed})
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

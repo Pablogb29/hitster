@@ -72,7 +72,7 @@ class Room(BaseModel):
     code: str
     hostId: str
     players: list[Player] = Field(default_factory=list)
-    status: Literal["lobby", "playing", "placing", "result", "finished"] = "lobby"
+    status: Literal["lobby", "playing", "placing", "result", "finished", "postGame"] = "lobby"
     turnIndex: int = 0
     turn: Optional[TurnState] = None
     deck: dict = Field(default_factory=lambda: {
@@ -83,6 +83,8 @@ class Room(BaseModel):
     })
     winnerId: Optional[str] = None
     tiePolicy: Literal["strict", "lenient"] = "lenient"
+    targetPoints: int = 10  # NEW: Configurable win condition
+    votes: dict = Field(default_factory=lambda: {"yes": 0, "no": 0, "voters": set()})  # NEW: Voting system
 
 rooms: dict[str, Room] = {}
 clients: dict[str, list[WebSocket]] = {}
@@ -92,6 +94,17 @@ debug_stats: dict[str, dict] = {}
 queue_locks: dict[str, asyncio.Lock] = {}
 queue_recent: dict[str, float] = {}
 QUEUE_RECENT_WINDOW = 2.0
+
+def isPlacementCorrect(placedYear: int, leftYear: Optional[int], rightYear: Optional[int]) -> bool:
+    """
+    Year-only validation: a placement is correct if the placed card's year fits 
+    between the neighbor years when the timeline is read chronologically.
+    Equal years are treated as the same position (order within the same year is free).
+    """
+    # Missing neighbors are unbounded on that side
+    leftOK = (leftYear is None) or (placedYear >= leftYear)
+    rightOK = (rightYear is None) or (placedYear <= rightYear)
+    return leftOK and rightOK
 
 def _stats_for_host(host_id: str) -> dict:
     entry = debug_stats.get(host_id)
@@ -264,26 +277,45 @@ def _find_room_for_turn(host_id: str, turn_id: str | None) -> Optional[tuple[str
     return None
 
 def _compute_insert_position(timeline: list[dict], track: dict, tie_policy: str) -> tuple[int, Optional[tuple[int, int]]]:
-    dates = [card.get("release", {}).get("date", "") for card in timeline]
-    target = track.get("release", {}).get("date", "")
-    if not dates:
+    """
+    Year-only validation: Find the correct insertion position based on year only.
+    Equal years are treated as the same position (order within the same year is free).
+    """
+    # Extract years from timeline
+    years = []
+    for card in timeline:
+        date = card.get("release", {}).get("date", "")
+        year = int(date.split("-")[0]) if date and date.split("-")[0].isdigit() else 0
+        years.append(year)
+    
+    # Extract target year
+    target_date = track.get("release", {}).get("date", "")
+    target_year = int(target_date.split("-")[0]) if target_date and target_date.split("-")[0].isdigit() else 0
+    
+    if not years:
         return (0, (0, 0) if tie_policy == "lenient" else None)
+    
+    # Find insertion point using year-only comparison
     lo = 0
-    hi = len(dates)
+    hi = len(years)
     while lo < hi:
         mid = (lo + hi) // 2
-        if dates[mid] < target:
+        if years[mid] < target_year:
             lo = mid + 1
         else:
             hi = mid
+    
     if tie_policy == "strict":
         return (lo, None)
+    
+    # For lenient policy, find the range of positions with the same year
     left = lo
     right = lo
-    while left - 1 >= 0 and dates[left - 1] == target:
+    while left - 1 >= 0 and years[left - 1] == target_year:
         left -= 1
-    while right < len(dates) and dates[right] == target:
+    while right < len(years) and years[right] == target_year:
         right += 1
+    
     return (lo, (left, right))
 
 def _deal_opening_cards(code: str, room: Room):
@@ -399,13 +431,20 @@ def code4() -> str:
 # REST
 # -------------------------------
 @app.get("/api/create-room")
-def create_room(hostId: str | None = None):
+def create_room(hostId: str | None = None, targetPoints: int = 10):
+    # Validate targetPoints
+    if not (1 <= targetPoints <= 100):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "targetPoints must be between 1 and 100"}
+        )
+    
     host_id = hostId or f"host-{random.randint(1000,9999)}"
     code = code4()
-    room = Room(code=code, hostId=host_id, players=[])
+    room = Room(code=code, hostId=host_id, players=[], targetPoints=targetPoints)
     rooms[code] = room
     clients[code] = []
-    return {"code": code, "hostId": host_id}
+    return {"code": code, "hostId": host_id, "targetPoints": targetPoints}
 
 
 class ConfirmPositionPayload(BaseModel):
@@ -509,6 +548,142 @@ async def ws_room(ws: WebSocket, code: str):
                 _set_phase(room.hostId, "playing")
                 await _broadcast_room_snapshot(code, room)
                 await _begin_turn(code, room)
+
+            elif event == "newGameRequest":
+                # Only winner can request new game
+                if data.get("playerId") != room.winnerId:
+                    await broadcast(code, "game:error", {"message": "Only the winner can start a new game."})
+                    continue
+                
+                # Start new game with optional new playlist and target points
+                new_playlist_id = data.get("playlistId")
+                new_target_points = data.get("targetPoints", room.targetPoints)
+                
+                # Validate target points
+                if not (1 <= new_target_points <= 100):
+                    await broadcast(code, "game:error", {"message": "Target points must be between 1 and 100."})
+                    continue
+                
+                # Update room config
+                room.targetPoints = new_target_points
+                if new_playlist_id:
+                    try:
+                        cards = await _load_playlist(room.hostId, playlist_id=new_playlist_id, name="New Game")
+                        if cards:
+                            room.deck = {
+                                "playlistId": new_playlist_id,
+                                "cards": cards,
+                                "used": set(),
+                                "discard": set(),
+                            }
+                    except Exception as exc:
+                        await broadcast(code, "game:error", {"message": f"Failed to load new playlist: {exc}"})
+                        continue
+                
+                # Reset game state
+                for p in room.players:
+                    if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST":
+                        p.timeline = []
+                        p.score = 0
+                room.turnIndex = 0
+                room.turn = None
+                room.status = "lobby"
+                room.winnerId = None
+                room.votes = {"yes": 0, "no": 0, "voters": set()}
+                
+                # Deal new cards and start
+                try:
+                    _deal_opening_cards(code, room)
+                except ValueError as exc:
+                    await broadcast(code, "game:error", {"message": str(exc)})
+                    room.status = "lobby"
+                    continue
+                
+                room.status = "playing"
+                _set_phase(room.hostId, "playing")
+                await _broadcast_room_snapshot(code, room)
+                await _begin_turn(code, room)
+                
+                # Broadcast new game started
+                await broadcast(code, "newGameStarted", {
+                    "config": {
+                        "playlistId": room.deck["playlistId"],
+                        "targetPoints": room.targetPoints
+                    }
+                })
+
+            elif event == "voteReplay":
+                # Non-winners can vote for replay
+                player_id = data.get("playerId")
+                vote = data.get("vote")
+                
+                if player_id == room.winnerId:
+                    await broadcast(code, "game:error", {"message": "Winner cannot vote for replay."})
+                    continue
+                
+                if vote not in ("YES", "NO"):
+                    await broadcast(code, "game:error", {"message": "Invalid vote. Must be YES or NO."})
+                    continue
+                
+                # Update vote
+                if player_id in room.votes["voters"]:
+                    # Player already voted, update their vote
+                    old_vote = room.votes.get(player_id, "NO")
+                    if old_vote == "YES":
+                        room.votes["yes"] -= 1
+                    else:
+                        room.votes["no"] -= 1
+                
+                room.votes["voters"].add(player_id)
+                room.votes[player_id] = vote
+                
+                if vote == "YES":
+                    room.votes["yes"] += 1
+                else:
+                    room.votes["no"] += 1
+                
+                # Check if majority reached
+                non_winners = [p for p in room.players if p.id != room.winnerId and not p.is_host and p.id != room.hostId and p.id.upper() != "HOST"]
+                needed = len(non_winners) // 2 + 1
+                
+                await broadcast(code, "voteStatus", {
+                    "yes": room.votes["yes"],
+                    "no": room.votes["no"],
+                    "needed": needed
+                })
+                
+                # If majority YES, auto-start new game
+                if room.votes["yes"] >= needed:
+                    # Start new game with same config
+                    for p in room.players:
+                        if not p.is_host and p.id != room.hostId and p.id.upper() != "HOST":
+                            p.timeline = []
+                            p.score = 0
+                    room.turnIndex = 0
+                    room.turn = None
+                    room.status = "lobby"
+                    room.winnerId = None
+                    room.votes = {"yes": 0, "no": 0, "voters": set()}
+                    
+                    try:
+                        _deal_opening_cards(code, room)
+                    except ValueError as exc:
+                        await broadcast(code, "game:error", {"message": str(exc)})
+                        room.status = "lobby"
+                        continue
+                    
+                    room.status = "playing"
+                    _set_phase(room.hostId, "playing")
+                    await _broadcast_room_snapshot(code, room)
+                    await _begin_turn(code, room)
+                    
+                    # Broadcast new game started
+                    await broadcast(code, "newGameStarted", {
+                        "config": {
+                            "playlistId": room.deck["playlistId"],
+                            "targetPoints": room.targetPoints
+                        }
+                    })
 
     except WebSocketDisconnect:
         if code in clients and ws in clients[code]:
@@ -1098,6 +1273,11 @@ async def confirm_position(payload: ConfirmPositionPayload):
         room.status = "result"
         room.turn.drawn = None
         room.turn.play_started = False
+        
+        # Check win condition
+        if player.score >= room.targetPoints:
+            room.winnerId = player.id
+            room.status = "postGame"
         result_payload.update(
             {
                 "correct": True,
@@ -1117,10 +1297,32 @@ async def confirm_position(payload: ConfirmPositionPayload):
                 ],
             }
         )
-        # Check win condition only for actual players
-        if player.score >= 10 and not player.is_host and player.id != room.hostId and player.id.upper() != "HOST":
-            room.status = "finished"
-            room.winnerId = player.id
+        # Emit gameOver event if win condition is met
+        if player.score >= room.targetPoints and not player.is_host and player.id != room.hostId and player.id.upper() != "HOST":
+            # Create ranking sorted by score
+            ranking = sorted(room.players, key=lambda p: p.score, reverse=True)
+            ranking_info = [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "score": p.score,
+                    "timeline": p.timeline,
+                    "seat": p.seat,
+                }
+                for p in ranking
+            ]
+            
+            # Broadcast gameOver event
+            await broadcast(room.code, "gameOver", {
+                "ranking": ranking_info,
+                "winnerId": player.id,
+                "targetPoints": room.targetPoints
+            })
+            
+            # Broadcast winnerDeciding event
+            await broadcast(room.code, "winnerDeciding", {
+                "winnerId": player.id
+            })
     else:
         room.deck.setdefault("discard", set()).add(card.get("trackId"))
         room.turn.phase = "result"

@@ -61,6 +61,7 @@ type LobbyState = {
   playlists: Array<{ id: string; name: string; tracks: { total: number } }>;
   selectedPlaylistId: string | null;
   tiePolicy: "strict" | "lenient";
+  targetPoints: number;
   status: string;
   wsConnected: boolean;
 };
@@ -73,6 +74,7 @@ type LobbyAction =
   | { type: "SET_PLAYLISTS"; playlists: Array<{ id: string; name: string; tracks: { total: number } }> }
   | { type: "SET_SELECTED_PLAYLIST"; playlistId: string | null }
   | { type: "SET_TIE_POLICY"; policy: "strict" | "lenient" }
+  | { type: "SET_TARGET_POINTS"; targetPoints: number }
   | { type: "SET_STATUS"; status: string }
   | { type: "SET_WS_CONNECTED"; connected: boolean };
 
@@ -84,6 +86,7 @@ const createInitialLobbyState = (): LobbyState => ({
   playlists: [],
   selectedPlaylistId: null,
   tiePolicy: "lenient",
+  targetPoints: 10,
   status: "Initializing...",
   wsConnected: false,
 });
@@ -118,6 +121,8 @@ const lobbyReducer = (state: LobbyState, action: LobbyAction): LobbyState => {
       return { ...state, selectedPlaylistId: action.playlistId };
     case "SET_TIE_POLICY":
       return { ...state, tiePolicy: action.policy };
+    case "SET_TARGET_POINTS":
+      return { ...state, targetPoints: action.targetPoints };
     case "SET_STATUS":
       return { ...state, status: action.status };
     case "SET_WS_CONNECTED":
@@ -199,7 +204,7 @@ export default function Lobby() {
 
         // Otherwise create a new room
         dispatch({ type: "SET_STATUS", status: "Creating room..." });
-        const resp = await fetch(`${API_BASE}/api/create-room`);
+        const resp = await fetch(`${API_BASE}/api/create-room?targetPoints=${state.targetPoints}`);
         if (!resp.ok) throw new Error(`Failed to create room: ${resp.status}`);
         const data = await resp.json();
 
@@ -432,6 +437,19 @@ export default function Lobby() {
                       <span>Strict (exact order required)</span>
                     </label>
                   </div>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium mb-2">Target Points to Win</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={state.targetPoints}
+                    onChange={(e) => dispatch({ type: "SET_TARGET_POINTS", targetPoints: parseInt(e.target.value) || 10 })}
+                    className="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-lg text-white focus:outline-none focus:border-emerald-500"
+                  />
+                  <p className="text-xs text-zinc-400 mt-1">Game ends when a player reaches this score (1-100)</p>
                 </div>
               </div>
             </div>
