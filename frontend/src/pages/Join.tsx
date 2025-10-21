@@ -204,9 +204,12 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       };
     }
     case "TURN_PLAY": {
+      console.log("[TURN_PLAY] payload.playerId:", action.payload.playerId, "state.meId:", state.meId, "match:", action.payload.playerId === state.meId);
       if (action.payload.playerId !== state.meId) {
+        console.log("[TURN_PLAY] Ignoring event - player ID mismatch");
         return state;
       }
+      console.log("[TURN_PLAY] Processing event - setting drawnCard");
       return {
         ...state,
         drawnCard: {
@@ -354,12 +357,15 @@ export default function Join() {
         dispatch({ type: "ROOM_INIT", payload: evt.data as RoomSnapshot });
         break;
       case "turn:begin":
+        console.log("[WS turn:begin] dispatching TURN_BEGIN");
         dispatch({ type: "TURN_BEGIN", payload: evt.data });
         break;
       case "turn:play":
+        console.log("[WS turn:play] dispatching TURN_PLAY for player:", evt.data.playerId);
         dispatch({ type: "TURN_PLAY", payload: evt.data as TurnPlayEvent });
         break;
       case "turn:placing":
+        console.log("[WS turn:placing] dispatching TURN_PLACING");
         dispatch({ type: "TURN_PLACING", payload: evt.data });
         break;
       case "turn:result":
@@ -600,6 +606,17 @@ export default function Join() {
 
   const playDisabled = !isMyTurn || state.turnPhase !== "playing" || state.playInFlight || !state.drawnCard;
   const placementDisabled = !isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight || !state.playConfirmed;
+  
+  // Debug logging for button state
+  console.log("[DEBUG] Button state:", {
+    isMyTurn,
+    turnPhase: state.turnPhase,
+    playInFlight: state.playInFlight,
+    drawnCard: state.drawnCard,
+    playDisabled,
+    meId: state.meId,
+    currentPlayerId: state.currentPlayerId
+  });
 
   const otherPlayers = useMemo(() => state.players.filter((p) => p.id !== mePlayer.id), [state.players, mePlayer.id]);
 
