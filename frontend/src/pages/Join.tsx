@@ -168,9 +168,9 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       const me = players.find((p) => p.id === state.meId);
       const ghostIndex = me ? me.timeline.length : 0;
       
-      // Preserve drawnCard if it exists and we're in the same turn
-      const preserveDrawnCard = state.drawnCard && turn?.turnId === state.turnId;
-      console.log("[ROOM_INIT] preserveDrawnCard:", preserveDrawnCard, "state.drawnCard:", state.drawnCard, "turn.turnId:", turn?.turnId, "state.turnId:", state.turnId);
+      // Preserve drawnCard if it exists and we're in the same turn and playing phase
+      const preserveDrawnCard = state.drawnCard && turn?.turnId === state.turnId && turn?.phase === "playing";
+      console.log("[ROOM_INIT] preserveDrawnCard:", preserveDrawnCard, "state.drawnCard:", state.drawnCard, "turn.turnId:", turn?.turnId, "turn.phase:", turn?.phase, "state.turnId:", state.turnId);
       
       return {
         ...state,
@@ -182,9 +182,10 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         turnPhase: turn?.phase ?? null,
         drawnCard: preserveDrawnCard ? state.drawnCard : null,
         ghostIndex,
-        playInFlight: false,
-        confirmInFlight: false,
-        playConfirmed: false,
+        // Don't reset playInFlight/confirmInFlight/playConfirmed if we're preserving the drawnCard
+        playInFlight: preserveDrawnCard ? state.playInFlight : false,
+        confirmInFlight: preserveDrawnCard ? state.confirmInFlight : false,
+        playConfirmed: preserveDrawnCard ? state.playConfirmed : false,
         status: "Room synced",
         lastResult: undefined,
         winnerId: action.payload.winnerId ?? null,
