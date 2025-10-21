@@ -432,6 +432,7 @@ def code4() -> str:
 # -------------------------------
 @app.get("/api/create-room")
 def create_room(hostId: str | None = None, targetPoints: int = 10):
+    logger.info(f"[create-room] targetPoints={targetPoints} hostId={hostId}")
     # Validate targetPoints
     if not (1 <= targetPoints <= 100):
         return JSONResponse(
@@ -444,6 +445,7 @@ def create_room(hostId: str | None = None, targetPoints: int = 10):
     room = Room(code=code, hostId=host_id, players=[], targetPoints=targetPoints)
     rooms[code] = room
     clients[code] = []
+    logger.info(f"[create-room] created room={code} with targetPoints={targetPoints}")
     return {"code": code, "hostId": host_id, "targetPoints": targetPoints}
 
 
