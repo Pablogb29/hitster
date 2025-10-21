@@ -165,161 +165,188 @@ export default function Tabletop() {
         </div>
       )}
 
-      {/* Game Table */}
-      <div className="flex items-center justify-center min-h-screen p-8">
-        <div className="relative w-[800px] h-[600px]">
-          {/* Wooden Table Surface */}
-          <div 
-            className="absolute inset-0 rounded-full shadow-2xl"
-            style={{
-              background: `
-                radial-gradient(ellipse at center, #8B4513 0%, #654321 50%, #4A2C17 100%),
-                repeating-linear-gradient(
-                  45deg,
-                  transparent,
-                  transparent 2px,
-                  rgba(0,0,0,0.1) 2px,
-                  rgba(0,0,0,0.1) 4px
-                )
-              `,
-              border: '8px solid #654321',
-              boxShadow: 'inset 0 0 50px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.4)'
-            }}
-          />
+      {/* Full Screen Game Table */}
+      <div className="absolute inset-0 p-4">
+        {/* Rectangular Wooden Table Surface */}
+        <div 
+          className="absolute inset-0 rounded-2xl shadow-2xl"
+          style={{
+            background: `
+              linear-gradient(135deg, #8B4513 0%, #654321 50%, #4A2C17 100%),
+              repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 2px,
+                rgba(0,0,0,0.1) 2px,
+                rgba(0,0,0,0.1) 4px
+              )
+            `,
+            border: '8px solid #654321',
+            boxShadow: 'inset 0 0 50px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.4)'
+          }}
+        />
 
-          {/* Players around the table */}
-          {state.room.players.map((player, index) => {
-            const isCurrentPlayer = currentPlayer?.id === player.id;
-            const isWinner = winner?.id === player.id;
-            const angle = (index * 360) / (state.room?.players.length || 1);
-            const radius = 180;
-            const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
-            const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
+        {/* Players around the table edges */}
+        {state.room.players.map((player, index) => {
+          const isCurrentPlayer = currentPlayer?.id === player.id;
+          const isWinner = winner?.id === player.id;
+          
+          // Position players around the rectangular table edges
+          let position = { x: 0, y: 0, rotation: 0 };
+          const margin = 80;
+          
+          if (index === 0) {
+            // Top edge
+            position = { x: 50, y: margin, rotation: 0 };
+          } else if (index === 1) {
+            // Right edge
+            position = { x: 100 - margin, y: 50, rotation: 90 };
+          } else if (index === 2) {
+            // Bottom edge
+            position = { x: 50, y: 100 - margin, rotation: 180 };
+          } else if (index === 3) {
+            // Left edge
+            position = { x: margin, y: 50, rotation: 270 };
+          } else {
+            // For more than 4 players, distribute around edges
+            const edgeIndex = index % 4;
+            const edgePosition = (index - edgeIndex) / 4;
+            const edgeOffset = (edgePosition + 1) * 20;
+            
+            if (edgeIndex === 0) {
+              position = { x: 20 + edgeOffset, y: margin, rotation: 0 };
+            } else if (edgeIndex === 1) {
+              position = { x: 100 - margin, y: 20 + edgeOffset, rotation: 90 };
+            } else if (edgeIndex === 2) {
+              position = { x: 80 - edgeOffset, y: 100 - margin, rotation: 180 };
+            } else {
+              position = { x: margin, y: 80 - edgeOffset, rotation: 270 };
+            }
+          }
 
-            return (
-              <div
-                key={player.id}
-                className="absolute transform -translate-x-1/2 -translate-y-1/2"
-                style={{
-                  left: `calc(50% + ${x}px)`,
-                  top: `calc(50% + ${y}px)`,
-                }}
-              >
-                {/* Player Name */}
-                <div className="text-center mb-2">
-                  <div className={`
-                    inline-block px-3 py-1 rounded-full text-sm font-bold
-                    ${isCurrentPlayer ? 'bg-emerald-500 text-white' : 'bg-white/80 text-zinc-800'}
-                    ${isWinner ? 'ring-2 ring-yellow-400' : ''}
-                    shadow-lg
-                  `}>
-                    {player.name}
-                    {isCurrentPlayer && <span className="ml-1">⚡</span>}
-                    {isWinner && <span className="ml-1">👑</span>}
-                  </div>
-                </div>
-
-                {/* Player's Timeline Cards */}
-                <div className="flex flex-col items-center space-y-1">
-                  {player.timeline.slice(0, 5).map((card, cardIndex) => (
-                    <div
-                      key={`${card.trackId}-${cardIndex}`}
-                      className="w-16 h-24 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
-                      style={{
-                        background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
-                        boxShadow: '0 4px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.8)'
-                      }}
-                      title={`${card.name} - ${card.artist}`}
-                    >
-                      <div className="text-xs font-bold text-zinc-800 text-center leading-tight">
-                        {card.name?.split(' ').slice(0, 2).join(' ') || 'Card'}
-                      </div>
-                      <div className="text-xs text-zinc-600 mt-1">
-                        {card.release?.date?.split('-')[0] || 'Year'}
-                      </div>
-                    </div>
-                  ))}
-                  {player.timeline.length > 5 && (
-                    <div className="w-16 h-24 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
-                      <div className="text-xs font-bold text-zinc-600">
-                        +{player.timeline.length - 5}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Player Score */}
-                <div className="text-center mt-2">
-                  <div className="text-sm font-bold text-zinc-800">Score: {player.score}</div>
+          return (
+            <div
+              key={player.id}
+              className="absolute transform -translate-x-1/2 -translate-y-1/2"
+              style={{
+                left: `${position.x}%`,
+                top: `${position.y}%`,
+                transform: `translate(-50%, -50%) rotate(${position.rotation}deg)`,
+              }}
+            >
+              {/* Player Name */}
+              <div className="text-center mb-3">
+                <div className={`
+                  inline-block px-4 py-2 rounded-full text-sm font-bold
+                  ${isCurrentPlayer ? 'bg-emerald-500 text-white' : 'bg-white/90 text-zinc-800'}
+                  ${isWinner ? 'ring-2 ring-yellow-400' : ''}
+                  shadow-lg
+                `}>
+                  {player.name}
+                  {isCurrentPlayer && <span className="ml-1">⚡</span>}
+                  {isWinner && <span className="ml-1">👑</span>}
                 </div>
               </div>
-            );
-          })}
 
-          {/* Center of table - Hidden Card Display */}
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-            {state.hiddenCard && (
-              <div className="relative">
-                {/* Hidden Card */}
-                <div 
-                  className="w-20 h-32 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-2 transform hover:scale-110 transition-transform"
-                  style={{
-                    background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 50%, #6D28D9 100%)',
-                    boxShadow: '0 8px 16px rgba(139, 92, 246, 0.4), inset 0 1px 0 rgba(255,255,255,0.3)'
-                  }}
-                >
-                  <div className="text-white text-center">
-                    <div className="text-lg mb-1">🎵</div>
-                    <div className="text-xs font-bold leading-tight">Hidden</div>
-                    <div className="text-xs font-bold leading-tight">Card</div>
-                    <div className="text-xs mt-1 opacity-90">
-                      {state.hiddenCard.stage === "incoming" && "Ready"}
-                      {state.hiddenCard.stage === "active" && "Playing"}
-                      {state.hiddenCard.stage === "revealing" && "Revealing"}
-                      {state.hiddenCard.stage === "failed" && "Failed"}
+              {/* Player's Timeline Cards - Horizontal Layout */}
+              <div className="flex items-center space-x-1">
+                {player.timeline.slice(0, 6).map((card, cardIndex) => (
+                  <div
+                    key={`${card.trackId}-${cardIndex}`}
+                    className="w-20 h-14 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
+                    style={{
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                      boxShadow: '0 4px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.8)'
+                    }}
+                    title={`${card.name} - ${card.artist}`}
+                  >
+                    <div className="text-xs font-bold text-zinc-800 text-center leading-tight">
+                      {card.name?.split(' ').slice(0, 2).join(' ') || 'Card'}
+                    </div>
+                    <div className="text-xs text-zinc-600">
+                      {card.release?.date?.split('-')[0] || 'Year'}
                     </div>
                   </div>
-                </div>
-
-                {/* Turn Indicator Arrow */}
-                {currentPlayer && (
-                  <div 
-                    className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-4xl animate-bounce"
-                    style={{
-                      filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))'
-                    }}
-                  >
-                    ⬇️
+                ))}
+                {player.timeline.length > 6 && (
+                  <div className="w-20 h-14 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
+                    <div className="text-xs font-bold text-zinc-600">
+                      +{player.timeline.length - 6}
+                    </div>
                   </div>
                 )}
               </div>
-            )}
 
-            {/* Game Status when no hidden card */}
-            {!state.hiddenCard && (
-              <div className="text-center">
-                <div className="w-20 h-32 bg-zinc-200 rounded-lg shadow-lg border-2 border-zinc-400 flex flex-col items-center justify-center">
-                  <div className="text-2xl mb-2">🎮</div>
-                  <div className="text-xs font-bold text-zinc-600 text-center">
-                    {state.room.status === "lobby" && "Waiting..."}
-                    {state.room.status === "playing" && "Game On"}
-                    {state.room.status === "result" && "Complete"}
-                    {state.room.status === "finished" && "Finished"}
+              {/* Player Score */}
+              <div className="text-center mt-2">
+                <div className="text-sm font-bold text-zinc-800">Score: {player.score}</div>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Center of table - Hidden Card Display */}
+        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+          {state.hiddenCard && (
+            <div className="relative">
+              {/* Hidden Card */}
+              <div 
+                className="w-24 h-16 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-2 transform hover:scale-110 transition-transform"
+                style={{
+                  background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 50%, #6D28D9 100%)',
+                  boxShadow: '0 8px 16px rgba(139, 92, 246, 0.4), inset 0 1px 0 rgba(255,255,255,0.3)'
+                }}
+              >
+                <div className="text-white text-center">
+                  <div className="text-lg mb-1">🎵</div>
+                  <div className="text-xs font-bold leading-tight">Hidden Card</div>
+                  <div className="text-xs mt-1 opacity-90">
+                    {state.hiddenCard.stage === "incoming" && "Ready"}
+                    {state.hiddenCard.stage === "active" && "Playing"}
+                    {state.hiddenCard.stage === "revealing" && "Revealing"}
+                    {state.hiddenCard.stage === "failed" && "Failed"}
                   </div>
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* Table Edge Details */}
-          <div className="absolute inset-0 rounded-full pointer-events-none">
-            <div 
-              className="absolute inset-2 rounded-full border-4 border-amber-800/30"
-              style={{
-                boxShadow: 'inset 0 0 20px rgba(0,0,0,0.2)'
-              }}
-            />
-          </div>
+              {/* Turn Indicator Arrow */}
+              {currentPlayer && (
+                <div 
+                  className="absolute -top-8 left-1/2 transform -translate-x-1/2 text-4xl animate-bounce"
+                  style={{
+                    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))'
+                  }}
+                >
+                  ⬇️
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Game Status when no hidden card */}
+          {!state.hiddenCard && (
+            <div className="text-center">
+              <div className="w-24 h-16 bg-zinc-200 rounded-lg shadow-lg border-2 border-zinc-400 flex flex-col items-center justify-center">
+                <div className="text-2xl mb-1">🎮</div>
+                <div className="text-xs font-bold text-zinc-600 text-center">
+                  {state.room.status === "lobby" && "Waiting..."}
+                  {state.room.status === "playing" && "Game On"}
+                  {state.room.status === "result" && "Complete"}
+                  {state.room.status === "finished" && "Finished"}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Table Edge Details */}
+        <div className="absolute inset-0 rounded-2xl pointer-events-none">
+          <div 
+            className="absolute inset-2 rounded-2xl border-4 border-amber-800/30"
+            style={{
+              boxShadow: 'inset 0 0 20px rgba(0,0,0,0.2)'
+            }}
+          />
         </div>
       </div>
 
