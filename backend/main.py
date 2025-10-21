@@ -515,6 +515,18 @@ async def ws_room(ws: WebSocket, code: str):
                 tie_policy = data.get("tiePolicy")
                 if tie_policy in ("strict", "lenient"):
                     room.tiePolicy = tie_policy
+                # Update targetPoints if provided
+                target_points = data.get("targetPoints")
+                if target_points is not None:
+                    try:
+                        target_points = int(target_points)
+                        if 1 <= target_points <= 100:
+                            room.targetPoints = target_points
+                            logger.info(f"[start] updated targetPoints={target_points} for room={code}")
+                        else:
+                            logger.warning(f"[start] invalid targetPoints={target_points}, keeping {room.targetPoints}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"[start] invalid targetPoints={target_points}, keeping {room.targetPoints}")
                 playlist_id = data.get("playlistId")
                 playlist_name = data.get("playlistName") or "Hitster"
                 try:
