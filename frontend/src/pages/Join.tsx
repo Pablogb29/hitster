@@ -168,8 +168,8 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       const me = players.find((p) => p.id === state.meId);
       const ghostIndex = me ? me.timeline.length : 0;
       
-      // Preserve drawnCard if it exists and we're in the same turn and playing phase
-      const preserveDrawnCard = state.drawnCard && turn?.turnId === state.turnId && turn?.phase === "playing";
+      // Preserve drawnCard if it exists and we're in the same turn and in playing or placing phase
+      const preserveDrawnCard = state.drawnCard && turn?.turnId === state.turnId && (turn?.phase === "playing" || turn?.phase === "placing");
       console.log("[ROOM_INIT] preserveDrawnCard:", preserveDrawnCard, "state.drawnCard:", state.drawnCard, "turn.turnId:", turn?.turnId, "turn.phase:", turn?.phase, "state.turnId:", state.turnId);
       
       return {
