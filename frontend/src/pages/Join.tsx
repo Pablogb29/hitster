@@ -91,6 +91,7 @@ type JoinInternalState = {
   lastResult?: { turnId: string; message: string; correct: boolean };
   winnerId: string | null;
   device: { id: string; name?: string } | null;
+  showScoreboard: boolean;
 };
 
 type JoinAction =
@@ -111,7 +112,9 @@ type JoinAction =
   | { type: "SET_STATUS"; payload: { status: string } }
   | { type: "SET_DEVICE"; payload: { id: string; name?: string } }
   | { type: "SET_DRAWN"; payload: TrackCard | null }
-  | { type: "SET_GHOST_INDEX"; payload: number };
+  | { type: "SET_GHOST_INDEX"; payload: number }
+  | { type: "SHOW_SCOREBOARD" }
+  | { type: "HIDE_SCOREBOARD" };
 
 const createInitialState = (meId: string): JoinInternalState => ({
   roomCode: "",
@@ -130,6 +133,7 @@ const createInitialState = (meId: string): JoinInternalState => ({
   lastResult: undefined,
   winnerId: null,
   device: null,
+  showScoreboard: false,
 });
 
 const formatYear = (release?: Release) => {
@@ -314,6 +318,10 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
         playInFlight: false,
         confirmInFlight: false,
       };
+    case "SHOW_SCOREBOARD":
+      return { ...state, showScoreboard: true };
+    case "HIDE_SCOREBOARD":
+      return { ...state, showScoreboard: false };
     case "SET_STATUS":
       return { ...state, status: action.payload.status };
     case "SET_DEVICE":
@@ -610,22 +618,22 @@ export default function Join() {
     const length = mePlayer.timeline.length;
     for (let i = 0; i <= length; i += 1) {
       if (isMyTurn && state.turnPhase === "placing" && state.ghostIndex === i) {
-        items.push(
-          <div
-            key={`ghost-${i}`}
-            className="rounded-xl border-2 border-dashed border-emerald-400/70 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-4 py-3 text-sm text-emerald-200"
-          >
-            <div className="font-semibold">🎵 Hidden Card Position</div>
-            <div className="text-emerald-300/70">Place the song here</div>
-          </div>
-        );
+            items.push(
+              <div
+                key={`ghost-${i}`}
+                className="rounded-xl border-2 border-dashed border-emerald-400/70 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-emerald-200"
+              >
+                <div className="font-semibold">🎵 Hidden Card Position</div>
+                <div className="text-emerald-300/70">Place the song here</div>
+              </div>
+            );
       }
       if (i < length) {
         const card = mePlayer.timeline[i];
         items.push(
-          <div key={`card-${card.trackId}-${i}`} className="rounded-xl bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-400/30 px-4 py-3 text-sm">
+          <div key={`card-${card.trackId}-${i}`} className="rounded-xl bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-400/30 px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm">
             <div className="text-blue-300 font-semibold text-xs mb-1">{formatYear(card.release)}</div>
-            <div className="text-white font-semibold">{card.name ?? "Revealed card"}</div>
+            <div className="text-white font-semibold text-xs sm:text-sm">{card.name ?? "Revealed card"}</div>
             <div className="text-white/70 text-xs">{card.artist ?? ""}</div>
           </div>
         );
@@ -649,6 +657,14 @@ export default function Join() {
   });
 
   const otherPlayers = useMemo(() => state.players.filter((p) => p.id !== mePlayer.id), [state.players, mePlayer.id]);
+
+  // Check if any player has reached 10 points and show scoreboard
+  useEffect(() => {
+    const hasWinner = state.players.some(player => player.score >= 10);
+    if (hasWinner && !state.showScoreboard) {
+      dispatch({ type: "SHOW_SCOREBOARD" });
+    }
+  }, [state.players, state.showScoreboard]);
 
   const winner = state.winnerId ? state.players.find((p) => p.id === state.winnerId)?.name ?? state.winnerId : null;
 
@@ -730,7 +746,7 @@ export default function Join() {
       ) : null}
 
       {/* Main Game Area */}
-      <div className="px-4 py-6 space-y-6 w-full">
+      <div className="px-2 sm:px-4 md:px-6 lg:px-8 py-4 sm:py-6 space-y-4 sm:space-y-6 w-full max-w-7xl mx-auto">
         {/* Turn Status */}
         {!isMyTurn ? (
           <div className="text-center py-8">
@@ -805,7 +821,7 @@ export default function Join() {
         ) : null}
 
         {/* Game Info Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
           {/* Your Timeline */}
           <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
             <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -828,35 +844,35 @@ export default function Join() {
               <span>👥</span> Players
             </h2>
             <div className="space-y-3">
-              <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500/20 to-green-500/20 rounded-xl p-4 border border-emerald-500/30">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-green-400 flex items-center justify-center text-black font-bold text-sm">
+              <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500/20 to-green-500/20 rounded-xl p-3 sm:p-4 border border-emerald-500/30">
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br from-emerald-400 to-green-400 flex items-center justify-center text-black font-bold text-xs sm:text-sm">
                     {mePlayer.name.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div className="font-semibold text-white">{mePlayer.name}</div>
+                    <div className="font-semibold text-white text-sm sm:text-base">{mePlayer.name}</div>
                     <div className="text-xs text-emerald-300">You</div>
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm text-emerald-300">Score: {mePlayer.score}</div>
-                  <div className="text-sm text-blue-300">Cards: {mePlayer.timeline.length}</div>
+                  <div className="text-xs sm:text-sm text-emerald-300">Score: {mePlayer.score}</div>
+                  <div className="text-xs sm:text-sm text-blue-300">Cards: {mePlayer.timeline.length}</div>
                 </div>
               </div>
               {otherPlayers.map((p) => (
-                <div key={p.id} className="flex items-center justify-between bg-white/5 rounded-xl p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-400 flex items-center justify-center text-white font-bold text-sm">
+                <div key={p.id} className="flex items-center justify-between bg-white/5 rounded-xl p-3 sm:p-4">
+                  <div className="flex items-center gap-2 sm:gap-3">
+                    <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-400 flex items-center justify-center text-white font-bold text-xs sm:text-sm">
                       {p.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div className="font-semibold text-white/90">{p.name}</div>
+                      <div className="font-semibold text-white/90 text-sm sm:text-base">{p.name}</div>
                       <div className="text-xs text-white/50">Player</div>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm text-white/70">Score: {p.score}</div>
-                    <div className="text-sm text-white/70">Cards: {p.timeline.length}</div>
+                    <div className="text-xs sm:text-sm text-white/70">Score: {p.score}</div>
+                    <div className="text-xs sm:text-sm text-white/70">Cards: {p.timeline.length}</div>
                   </div>
                 </div>
               ))}
@@ -864,6 +880,78 @@ export default function Join() {
           </div>
         </div>
       </div>
+
+      {/* Scoreboard Popup */}
+      {state.showScoreboard && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 rounded-3xl p-8 max-w-2xl w-full border border-white/20 shadow-2xl">
+            <div className="text-center mb-8">
+              <div className="text-6xl mb-4">🏆</div>
+              <h2 className="text-3xl font-bold text-white mb-2">Game Complete!</h2>
+              <p className="text-white/70">Final Scores</p>
+            </div>
+            
+            <div className="space-y-4 mb-8">
+              {state.players
+                .sort((a, b) => b.score - a.score)
+                .map((player, index) => (
+                  <div
+                    key={player.id}
+                    className={`flex items-center justify-between p-4 rounded-2xl ${
+                      index === 0
+                        ? "bg-gradient-to-r from-yellow-500/20 to-orange-500/20 border-2 border-yellow-400/50"
+                        : "bg-white/10 border border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center text-2xl font-bold ${
+                        index === 0
+                          ? "bg-gradient-to-br from-yellow-400 to-orange-400 text-black"
+                          : "bg-gradient-to-br from-blue-400 to-purple-400 text-white"
+                      }`}>
+                        {index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : index + 1}
+                      </div>
+                      <div>
+                        <div className="font-semibold text-white text-lg">{player.name}</div>
+                        <div className="text-white/70 text-sm">
+                          {player.timeline.length} cards
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-2xl font-bold ${
+                        index === 0 ? "text-yellow-400" : "text-white"
+                      }`}>
+                        {player.score}
+                      </div>
+                      <div className="text-white/70 text-sm">points</div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+
+            <div className="text-center">
+              <button
+                onClick={() => dispatch({ type: "HIDE_SCOREBOARD" })}
+                className="bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 text-white font-bold py-3 px-8 rounded-2xl text-lg transition-all duration-200 mr-4"
+              >
+                🎮 Continue Playing
+              </button>
+              {state.meId === state.hostId && (
+                <button
+                  onClick={() => {
+                    // Navigate to new game - this would need to be implemented
+                    window.location.href = "/host";
+                  }}
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-bold py-3 px-8 rounded-2xl text-lg transition-all duration-200"
+                >
+                  🆕 New Game
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
