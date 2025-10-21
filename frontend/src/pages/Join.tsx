@@ -332,7 +332,6 @@ export default function Join() {
   const [code, setCode] = useState(codeParam);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
-  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
   const playerId = useMemo(() => "p-" + Math.random().toString(36).slice(2, 8), []);
   const [state, dispatch] = useReducer(joinReducer, playerId, createInitialState);
   const connRef = useRef<ReturnType<typeof connectWS> | null>(null);
@@ -351,14 +350,6 @@ export default function Join() {
   }, [state.players, state.meId, name]);
 
   const isMyTurn = state.currentPlayerId === mePlayer.id;
-  const phaseLabel = useMemo(() => {
-    if (state.winnerId) return "finished";
-    if (!state.turnId) return state.roomCode ? "waiting" : "lobby";
-    if (!isMyTurn) return "waiting";
-    if (state.turnPhase === "placing") return state.confirmInFlight ? "placing…" : "placing";
-    if (state.turnPhase === "result") return "result";
-    return state.playInFlight ? "playing…" : "playing";
-  }, [state.turnId, state.turnPhase, state.playInFlight, state.confirmInFlight, isMyTurn, state.roomCode, state.winnerId]);
 
   const handleWsEvent = useCallback((evt: WSEvent) => {
     console.log("[WS]", evt.event, evt.data);
@@ -474,11 +465,8 @@ export default function Join() {
     if (!code.trim() || !name.trim()) return;
     const roomCode = code.trim().toUpperCase();
     dispatch({ type: "SET_ROOM_CODE", code: roomCode });
-    setWsStatus("connecting");
     const conn = connectWS(roomCode, handleWsEvent);
     connRef.current = conn;
-    conn.ws.addEventListener("open", () => setWsStatus("open"));
-    conn.ws.addEventListener("close", () => setWsStatus("closed"));
     conn.send("join", { id: playerId, name: name.trim(), is_host: false });
     setJoined(true);
     dispatch({ type: "SET_STATUS", payload: { status: "Connected to room." } });
