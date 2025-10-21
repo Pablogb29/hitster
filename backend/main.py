@@ -1029,6 +1029,7 @@ async def spotify_queue_next(payload: dict):
                         turn.last_play_uri = target_uri
                         turn.phase = "placing"
                         room_ref.status = "placing"
+                        logger.info(f"[emit turn:placing] room={code} turnId={turn_id}")
                         await broadcast(code, "turn:placing", {"turnId": turn_id})
                         await _broadcast_room_snapshot(code, room_ref)
         finally:

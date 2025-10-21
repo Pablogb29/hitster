@@ -221,13 +221,17 @@ const joinReducer = (state: JoinInternalState, action: JoinAction): JoinInternal
       };
     }
     case "TURN_PLACING": {
+      console.log("[TURN_PLACING] turnId:", action.payload.turnId, "state.turnId:", state.turnId, "match:", action.payload.turnId === state.turnId);
       if (!state.turnId || action.payload.turnId !== state.turnId) {
+        console.log("[TURN_PLACING] Ignoring event - turn ID mismatch");
         return state;
       }
+      console.log("[TURN_PLACING] Processing event - setting playConfirmed: true");
       return {
         ...state,
         turnPhase: "placing",
         playInFlight: false,
+        playConfirmed: true, // Player has already played their hidden card
         status: state.currentPlayerId === state.meId ? "Choose the position using ↑ / ↓." : "Other player is placing...",
       };
     }
@@ -365,7 +369,7 @@ export default function Join() {
         dispatch({ type: "TURN_PLAY", payload: evt.data as TurnPlayEvent });
         break;
       case "turn:placing":
-        console.log("[WS turn:placing] dispatching TURN_PLACING");
+        console.log("[WS turn:placing] dispatching TURN_PLACING with turnId:", evt.data.turnId);
         dispatch({ type: "TURN_PLACING", payload: evt.data });
         break;
       case "turn:result":
