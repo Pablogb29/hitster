@@ -268,7 +268,7 @@ export default function Tabletop() {
                 {player.timeline.slice(0, 4).map((card, cardIndex) => (
                   <div
                     key={`${card.trackId}-${cardIndex}`}
-                    className="w-20 h-14 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
+                    className="w-40 h-28 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
                     style={{
                       background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
                       boxShadow: '0 4px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.8)'
@@ -287,7 +287,7 @@ export default function Tabletop() {
                   </div>
                 ))}
                 {player.timeline.length > 4 && (
-                  <div className="w-20 h-14 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
+                  <div className="w-40 h-28 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
                     <div className="text-xs font-bold text-zinc-600 text-center">
                       +{player.timeline.length - 4}
                     </div>
@@ -311,7 +311,7 @@ export default function Tabletop() {
             <div className="relative">
               {/* Hidden Card */}
               <div 
-                className="w-20 h-14 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-1 transform hover:scale-110 transition-transform"
+                className="w-40 h-28 rounded-lg shadow-2xl border-4 border-purple-500 flex flex-col items-center justify-center p-1 transform hover:scale-110 transition-transform"
                 style={{
                   background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 50%, #6D28D9 100%)',
                   boxShadow: '0 8px 16px rgba(139, 92, 246, 0.4), inset 0 1px 0 rgba(255,255,255,0.3)'
