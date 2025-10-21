@@ -558,6 +558,26 @@ export default function Join() {
     }
   }, [state.turnId, state.roomCode, state.ghostIndex, playerId]);
 
+  const handleNextTurn = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/turn/next`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ roomCode: state.roomCode }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        dispatch({ type: "SET_STATUS", payload: { status: `Next turn failed: ${resp.status} ${text}` } });
+        return;
+      }
+      dispatch({ type: "SET_STATUS", payload: { status: "Next turn requested!" } });
+    } catch (err: any) {
+      dispatch({ type: "SET_STATUS", payload: { status: `Next turn error: ${err?.message || err}` } });
+    }
+  }, [state.roomCode]);
+
   const moveGhost = useCallback(
     (delta: number) => {
       if (!isMyTurn || state.turnPhase !== "placing" || state.confirmInFlight) return;
@@ -710,7 +730,7 @@ export default function Join() {
       ) : null}
 
       {/* Main Game Area */}
-      <div className="px-4 py-6 space-y-6">
+      <div className="px-4 py-6 space-y-6 w-full">
         {/* Turn Status */}
         {!isMyTurn ? (
           <div className="text-center py-8">
@@ -770,62 +790,77 @@ export default function Join() {
               {state.confirmInFlight ? "🎯 Checking..." : "🎯 Confirm Position"}
             </button>
           </div>
+        ) : state.turnPhase === "result" ? (
+          <div className="text-center py-8">
+            <div className="text-6xl mb-4">📊</div>
+            <div className="text-xl font-semibold text-white mb-4">Turn Complete!</div>
+            <div className="text-white/70 mb-6">Check the result and continue to the next turn</div>
+            <button
+              onClick={handleNextTurn}
+              className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-bold py-4 px-8 rounded-2xl text-lg transition-all duration-200"
+            >
+              🎮 Next Turn
+            </button>
+          </div>
         ) : null}
 
-        {/* Your Timeline */}
-        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span>📅</span> Your Timeline
-          </h2>
-          <div className="space-y-3">
-            {ghostElements.length > 0 ? ghostElements : (
-              <div className="text-center py-8 text-white/60">
-                <div className="text-4xl mb-2">🎵</div>
-                <div>No cards yet</div>
-                <div className="text-sm">Place the hidden card to start your timeline</div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Players */}
-        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span>👥</span> Players
-          </h2>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500/20 to-green-500/20 rounded-xl p-4 border border-emerald-500/30">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-green-400 flex items-center justify-center text-black font-bold text-sm">
-                  {mePlayer.name.charAt(0).toUpperCase()}
+        {/* Game Info Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Your Timeline */}
+          <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
+            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <span>📅</span> Your Timeline
+            </h2>
+            <div className="space-y-3">
+              {ghostElements.length > 0 ? ghostElements : (
+                <div className="text-center py-8 text-white/60">
+                  <div className="text-4xl mb-2">🎵</div>
+                  <div>No cards yet</div>
+                  <div className="text-sm">Place the hidden card to start your timeline</div>
                 </div>
-                <div>
-                  <div className="font-semibold text-white">{mePlayer.name}</div>
-                  <div className="text-xs text-emerald-300">You</div>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-emerald-300">Score: {mePlayer.score}</div>
-                <div className="text-sm text-blue-300">Cards: {mePlayer.timeline.length}</div>
-              </div>
+              )}
             </div>
-            {otherPlayers.map((p) => (
-              <div key={p.id} className="flex items-center justify-between bg-white/5 rounded-xl p-4">
+          </div>
+
+          {/* Players */}
+          <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
+            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <span>👥</span> Players
+            </h2>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500/20 to-green-500/20 rounded-xl p-4 border border-emerald-500/30">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-400 flex items-center justify-center text-white font-bold text-sm">
-                    {p.name.charAt(0).toUpperCase()}
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-green-400 flex items-center justify-center text-black font-bold text-sm">
+                    {mePlayer.name.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div className="font-semibold text-white/90">{p.name}</div>
-                    <div className="text-xs text-white/50">Player</div>
+                    <div className="font-semibold text-white">{mePlayer.name}</div>
+                    <div className="text-xs text-emerald-300">You</div>
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm text-white/70">Score: {p.score}</div>
-                  <div className="text-sm text-white/70">Cards: {p.timeline.length}</div>
+                  <div className="text-sm text-emerald-300">Score: {mePlayer.score}</div>
+                  <div className="text-sm text-blue-300">Cards: {mePlayer.timeline.length}</div>
                 </div>
               </div>
-            ))}
+              {otherPlayers.map((p) => (
+                <div key={p.id} className="flex items-center justify-between bg-white/5 rounded-xl p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-400 flex items-center justify-center text-white font-bold text-sm">
+                      {p.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white/90">{p.name}</div>
+                      <div className="text-xs text-white/50">Player</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm text-white/70">Score: {p.score}</div>
+                    <div className="text-sm text-white/70">Cards: {p.timeline.length}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
