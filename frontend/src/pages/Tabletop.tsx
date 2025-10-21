@@ -191,37 +191,52 @@ export default function Tabletop() {
           const isCurrentPlayer = currentPlayer?.id === player.id;
           const isWinner = winner?.id === player.id;
           
-          // Position players around the rectangular table edges
+          // Smart positioning based on number of players
           let position = { x: 0, y: 0, rotation: 0 };
-          const margin = 80;
+          const totalPlayers = state.room?.players.length || 0;
+          const margin = 100;
           
-          if (index === 0) {
-            // Top edge
-            position = { x: 50, y: margin, rotation: 0 };
-          } else if (index === 1) {
-            // Right edge
-            position = { x: 100 - margin, y: 50, rotation: 90 };
-          } else if (index === 2) {
-            // Bottom edge
-            position = { x: 50, y: 100 - margin, rotation: 180 };
-          } else if (index === 3) {
-            // Left edge
-            position = { x: margin, y: 50, rotation: 270 };
-          } else {
-            // For more than 4 players, distribute around edges
-            const edgeIndex = index % 4;
-            const edgePosition = (index - edgeIndex) / 4;
-            const edgeOffset = (edgePosition + 1) * 20;
-            
-            if (edgeIndex === 0) {
-              position = { x: 20 + edgeOffset, y: margin, rotation: 0 };
-            } else if (edgeIndex === 1) {
-              position = { x: 100 - margin, y: 20 + edgeOffset, rotation: 90 };
-            } else if (edgeIndex === 2) {
-              position = { x: 80 - edgeOffset, y: 100 - margin, rotation: 180 };
+          if (totalPlayers === 2) {
+            // Two players: face to face
+            if (index === 0) {
+              position = { x: 50, y: margin, rotation: 0 }; // Top
             } else {
-              position = { x: margin, y: 80 - edgeOffset, rotation: 270 };
+              position = { x: 50, y: 100 - margin, rotation: 180 }; // Bottom
             }
+          } else if (totalPlayers === 3) {
+            // Three players: triangle
+            if (index === 0) {
+              position = { x: 50, y: margin, rotation: 0 }; // Top
+            } else if (index === 1) {
+              position = { x: 100 - margin, y: 50, rotation: 90 }; // Right
+            } else {
+              position = { x: margin, y: 50, rotation: 270 }; // Left
+            }
+          } else if (totalPlayers === 4) {
+            // Four players: square
+            if (index === 0) {
+              position = { x: 50, y: margin, rotation: 0 }; // Top
+            } else if (index === 1) {
+              position = { x: 100 - margin, y: 50, rotation: 90 }; // Right
+            } else if (index === 2) {
+              position = { x: 50, y: 100 - margin, rotation: 180 }; // Bottom
+            } else {
+              position = { x: margin, y: 50, rotation: 270 }; // Left
+            }
+          } else if (totalPlayers === 5) {
+            // Five players: pentagon
+            const angle = (index * 360) / 5;
+            const radius = 35;
+            const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
+            const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
+            position = { x: 50 + x, y: 50 + y, rotation: angle };
+          } else {
+            // Six or more players: circle
+            const angle = (index * 360) / totalPlayers;
+            const radius = 40;
+            const x = Math.cos((angle - 90) * Math.PI / 180) * radius;
+            const y = Math.sin((angle - 90) * Math.PI / 180) * radius;
+            position = { x: 50 + x, y: 50 + y, rotation: angle };
           }
 
           return (
@@ -235,51 +250,56 @@ export default function Tabletop() {
               }}
             >
               {/* Player Name */}
-              <div className="text-center mb-3">
+              <div className="text-center mb-4">
                 <div className={`
-                  inline-block px-4 py-2 rounded-full text-sm font-bold
+                  inline-block px-6 py-3 rounded-full text-lg font-bold
                   ${isCurrentPlayer ? 'bg-emerald-500 text-white' : 'bg-white/90 text-zinc-800'}
                   ${isWinner ? 'ring-2 ring-yellow-400' : ''}
                   shadow-lg
                 `}>
                   {player.name}
-                  {isCurrentPlayer && <span className="ml-1">⚡</span>}
-                  {isWinner && <span className="ml-1">👑</span>}
+                  {isCurrentPlayer && <span className="ml-2">⚡</span>}
+                  {isWinner && <span className="ml-2">👑</span>}
                 </div>
               </div>
 
               {/* Player's Timeline Cards - Horizontal Layout */}
-              <div className="flex items-center space-x-1">
-                {player.timeline.slice(0, 6).map((card, cardIndex) => (
+              <div className="flex items-center space-x-2">
+                {player.timeline.slice(0, 5).map((card, cardIndex) => (
                   <div
                     key={`${card.trackId}-${cardIndex}`}
-                    className="w-20 h-14 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-1 transform hover:scale-105 transition-transform"
+                    className="w-28 h-20 bg-white rounded-lg shadow-lg border-2 border-zinc-300 flex flex-col items-center justify-center p-2 transform hover:scale-105 transition-transform"
                     style={{
                       background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
                       boxShadow: '0 4px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.8)'
                     }}
-                    title={`${card.name} - ${card.artist}`}
+                    title={`${card.name} - ${card.artist} (${card.release?.date?.split('-')[0] || 'Unknown Year'})`}
                   >
-                    <div className="text-xs font-bold text-zinc-800 text-center leading-tight">
-                      {card.name?.split(' ').slice(0, 2).join(' ') || 'Card'}
+                    <div className="text-sm font-bold text-zinc-800 text-center leading-tight mb-1">
+                      {card.name || 'Unknown Song'}
                     </div>
-                    <div className="text-xs text-zinc-600">
-                      {card.release?.date?.split('-')[0] || 'Year'}
+                    <div className="text-xs text-zinc-600 text-center leading-tight">
+                      {card.artist || 'Unknown Artist'}
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-1">
+                      {card.release?.date?.split('-')[0] || 'Unknown Year'}
                     </div>
                   </div>
                 ))}
-                {player.timeline.length > 6 && (
-                  <div className="w-20 h-14 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
-                    <div className="text-xs font-bold text-zinc-600">
-                      +{player.timeline.length - 6}
+                {player.timeline.length > 5 && (
+                  <div className="w-28 h-20 bg-zinc-300 rounded-lg shadow-lg border-2 border-zinc-400 flex items-center justify-center">
+                    <div className="text-sm font-bold text-zinc-600 text-center">
+                      +{player.timeline.length - 5}
                     </div>
                   </div>
                 )}
               </div>
 
               {/* Player Score */}
-              <div className="text-center mt-2">
-                <div className="text-sm font-bold text-zinc-800">Score: {player.score}</div>
+              <div className="text-center mt-3">
+                <div className="text-lg font-bold text-zinc-800 bg-white/80 px-3 py-1 rounded-full shadow-md">
+                  Score: {player.score}
+                </div>
               </div>
             </div>
           );
