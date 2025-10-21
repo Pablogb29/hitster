@@ -326,8 +326,8 @@ export default function Lobby() {
 
   // Navigate to tabletop when game starts
   useEffect(() => {
-    if (state.roomCode && state.status.includes("Game started") || state.status.includes("playing")) {
-      navigate(`/host/tabletop?code=${state.roomCode}&hostId=${state.hostId}`);
+    if (state.roomCode && (state.status.includes("Game started") || state.status.includes("playing"))) {
+      navigate(`/tabletop?code=${state.roomCode}&hostId=${state.hostId}`);
     }
   }, [state.status, state.roomCode, state.hostId, navigate]);
 
@@ -480,6 +480,19 @@ export default function Lobby() {
                   </div>
                   <div className="text-emerald-400 font-mono text-sm break-all">
                     {window.location.origin}/join?code={state.roomCode}
+                  </div>
+                  <div className="pt-4 border-t border-zinc-700">
+                    <a
+                      href={`/tabletop?code=${state.roomCode}&hostId=${state.hostId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+                    >
+                      📺 Open Tabletop View
+                    </a>
+                    <div className="text-xs text-zinc-500 mt-2">
+                      Perfect for TV display
+                    </div>
                   </div>
                 </div>
               </div>

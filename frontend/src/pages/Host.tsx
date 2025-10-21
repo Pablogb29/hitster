@@ -255,6 +255,14 @@ export default function Host() {
                 Next Turn
               </button>
             )}
+            <a
+              href={`/tabletop?code=${roomCode}&hostId=${hostId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+            >
+              📺 Full Tabletop View
+            </a>
           </div>
         </div>
         <div className="mt-2 text-sm text-zinc-300">
