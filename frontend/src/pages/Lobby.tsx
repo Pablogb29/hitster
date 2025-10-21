@@ -204,6 +204,7 @@ export default function Lobby() {
 
         // Otherwise create a new room
         dispatch({ type: "SET_STATUS", status: "Creating room..." });
+        console.log("[Lobby] Creating room with targetPoints:", state.targetPoints);
         const resp = await fetch(`${API_BASE}/api/create-room?targetPoints=${state.targetPoints}`);
         if (!resp.ok) throw new Error(`Failed to create room: ${resp.status}`);
         const data = await resp.json();
@@ -446,7 +447,11 @@ export default function Lobby() {
                     min="1"
                     max="100"
                     value={state.targetPoints}
-                    onChange={(e) => dispatch({ type: "SET_TARGET_POINTS", targetPoints: parseInt(e.target.value) || 10 })}
+                    onChange={(e) => {
+                      const newValue = parseInt(e.target.value) || 10;
+                      console.log("[Lobby] Setting targetPoints to:", newValue);
+                      dispatch({ type: "SET_TARGET_POINTS", targetPoints: newValue });
+                    }}
                     className="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-lg text-white focus:outline-none focus:border-emerald-500"
                   />
                   <p className="text-xs text-zinc-400 mt-1">Game ends when a player reaches this score (1-100)</p>
